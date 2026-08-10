@@ -1,0 +1,88 @@
+{
+  "schema": "tactile_gan_coverage_board.v4.verified_pitch_dock.v2",
+  "variant": "exact_150",
+  "units": "mm",
+  "tile_frame": {
+    "origin": "centre of one 170 x 170 mm tile at its bottom plane",
+    "x_positive": "tile local +X",
+    "y_positive": "from the south dock edge into the tactile board",
+    "z_positive": "physical up"
+  },
+  "board_interface": {
+    "tile_size_mm": 170.0,
+    "board_base_top_z_mm": 6.0,
+    "south_tile_edge_y_mm": -85.0,
+    "edge_locator_face_y_mm": -85.0,
+    "board_thickness_mm": 6.0,
+    "clip_internal_height_mm": 6.4,
+    "clip_clearance_mm": 0.4,
+    "clip_bottom_z_mm": -2.0,
+    "dock_mount_clearance_diameter_mm": 6.6,
+    "note": "The continuous C-shaped clamp bears against the full south tile edge, its lower lip supports the board underside, and its upper lip bears on the board top. The printed board may keep nominal 6.0 mm holes; the dock deliberately uses 6.6 mm clearance so the M6 screw passes through it and locks in the board/base thread.",
+    "type": "closed_round_holes",
+    "physical_board_hole_centres_tile_local_xy_mm": [
+      [
+        -75.0,
+        -75.0
+      ],
+      [
+        75.0,
+        -75.0
+      ]
+    ],
+    "mount_hole_diameter_mm": 6.6,
+    "mounting_instruction": "Place the south tile edge against the dock rail, then insert and tighten two M6 screws through the closed clearance holes."
+  },
+  "tactip_reference": {
+    "tool": 2,
+    "tool_tcp_assumption": "Tool(2) origin is the TacTip compliant contact apex.",
+    "rigid_flange_diameter_mm": 49.5,
+    "guide_inner_diameter_mm": 50.8,
+    "guide_outer_diameter_mm": 60.0,
+    "soft_tip_through_diameter_mm": 44.0,
+    "seat_top_z_mm": 52.0,
+    "apex_below_shoulder_mm": 40.0,
+    "nominal_seated_tool_tcp_local_mm": [
+      0.0,
+      -139.0,
+      12.0
+    ],
+    "cable_slot_direction": "tile local -Y",
+    "cable_slot_width_mm": 8.0
+  },
+  "reference_pad": {
+    "centre_local_mm": [
+      0.0,
+      -110.0,
+      8.75
+    ],
+    "top_z_mm": 12.0,
+    "usable_flat_size_mm": [
+      50.0,
+      38.0
+    ],
+    "purpose": "A flat visual-contact reference after the dock is mechanically mated to the tile."
+  },
+  "sampler_transform": {
+    "mapping": "p_base = p_seated_tcp + R_tile_to_base @ (p_tile - p_seated_tool_tcp_local)",
+    "note": "Teach a fresh Tool(2) seated TCP after installing a new dock variant. Do not reuse a profile from the old lightweight dock."
+  },
+  "print": {
+    "material": "PETG preferred; PLA+ acceptable for a calibration-only dock.",
+    "orientation": "Print with both feet on the plate and locating ring upward.",
+    "settings": "0.28 mm layers, 4 walls, 20% gyroid infill.",
+    "supports": "Normally none; add inside-guide support only if the slicer flags a bridge."
+  },
+  "stl": "outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/tactip_calibration_dock_verified_pitch_v2/v4_tactip_calibration_dock_v2_exact_150.stl",
+  "stl_sha256": "a151c9b4cc64d38a51074fd867631a47d447adea3d7987921f634fe8f8b4461a",
+  "extent_mm": [
+    170.0,
+    114.5,
+    64.0
+  ],
+  "volume_mm3": 93290.19230667622,
+  "watertight": true,
+  "components": 1,
+  "tile_preview_stl": "outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/tactile_gan_coverage_board_340mm_tile_nw.stl",
+  "tile_preview_stl_sha256": "9fcbbe6e25a23410c0d9582b6702539a8ec41fcec31a7da6f5f34302d27c7637"
+}
