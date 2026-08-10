@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<robot name="tactile_gan_coverage_board_340mm">
+  <link name="board_frame"><inertial><mass value="0.001"/><inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/></inertial></link>
+  <link name="tile_nw">
+    <inertial><origin xyz="0 0 0.006"/><mass value="0.75"/><inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.008"/></inertial>
+    <visual><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_nw.stl" scale="0.001 0.001 0.001"/></geometry><material name="stimulus_blue"><color rgba="0.16 0.42 0.72 1"/></material></visual>
+    <collision><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_nw.stl" scale="0.001 0.001 0.001"/></geometry></collision>
+  </link>
+  <joint name="board_frame_to_tile_nw" type="fixed">
+    <parent link="board_frame"/><child link="tile_nw"/><origin xyz="-0.085000 0.085000 0" rpy="0 0 0"/>
+  </joint>
+  <link name="tile_ne">
+    <inertial><origin xyz="0 0 0.006"/><mass value="0.75"/><inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.008"/></inertial>
+    <visual><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_ne.stl" scale="0.001 0.001 0.001"/></geometry><material name="stimulus_blue"><color rgba="0.16 0.42 0.72 1"/></material></visual>
+    <collision><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_ne.stl" scale="0.001 0.001 0.001"/></geometry></collision>
+  </link>
+  <joint name="board_frame_to_tile_ne" type="fixed">
+    <parent link="board_frame"/><child link="tile_ne"/><origin xyz="0.085000 0.085000 0" rpy="0 0 0"/>
+  </joint>
+  <link name="tile_sw">
+    <inertial><origin xyz="0 0 0.006"/><mass value="0.75"/><inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.008"/></inertial>
+    <visual><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_sw.stl" scale="0.001 0.001 0.001"/></geometry><material name="stimulus_blue"><color rgba="0.16 0.42 0.72 1"/></material></visual>
+    <collision><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_sw.stl" scale="0.001 0.001 0.001"/></geometry></collision>
+  </link>
+  <joint name="board_frame_to_tile_sw" type="fixed">
+    <parent link="board_frame"/><child link="tile_sw"/><origin xyz="-0.085000 -0.085000 0" rpy="0 0 0"/>
+  </joint>
+  <link name="tile_se">
+    <inertial><origin xyz="0 0 0.006"/><mass value="0.75"/><inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.008"/></inertial>
+    <visual><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_se.stl" scale="0.001 0.001 0.001"/></geometry><material name="stimulus_blue"><color rgba="0.16 0.42 0.72 1"/></material></visual>
+    <collision><geometry><mesh filename="tactile_gan_coverage_board_340mm_tile_se.stl" scale="0.001 0.001 0.001"/></geometry></collision>
+  </link>
+  <joint name="board_frame_to_tile_se" type="fixed">
+    <parent link="board_frame"/><child link="tile_se"/><origin xyz="0.085000 -0.085000 0" rpy="0 0 0"/>
+  </joint>
+</robot>

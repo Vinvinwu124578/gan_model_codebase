@@ -1,0 +1,621 @@
+{
+  "schema": "tactile_gan_coverage_board.modular.v4.deepcontact.mountpitch150",
+  "units": "mm",
+  "height_profile": "deep-contact",
+  "height_profile_spec": {
+    "name": "deep-contact",
+    "description": "High-protrusion v4 profile for controlled 2-8 mm TacTip indentation experiments.",
+    "flat_step_mm": 6.0,
+    "sharp_edge_peak_above_flat_mm": 8.0,
+    "rounded_ridge_peak_above_flat_mm": 8.0,
+    "broad_curvature_peak_to_rim_mm": 8.0,
+    "saddle_total_range_mm": 12.0,
+    "fine_ridge_peak_to_trough_mm": 2.5,
+    "micro_dot_peak_above_floor_mm": 4.0,
+    "micro_checker_step_mm": 1.6,
+    "recommended_large_indentation_band_mm": [
+      2.0,
+      8.0
+    ]
+  },
+  "assembled_board_size_mm": [
+    340.0,
+    340.0
+  ],
+  "tile_size_mm": [
+    170.0,
+    170.0
+  ],
+  "tile_count": 4,
+  "cell_size_mm": 70.0,
+  "cell_gap_mm": 4.0,
+  "central_tile_seam_width_mm": 26.0,
+  "base_thickness_mm": 6.0,
+  "surface_height_range_mm": [
+    6.0,
+    18.0
+  ],
+  "grid_resolution_mm": 0.5,
+  "m6_hole_diameter_mm": 6.0,
+  "nominal_tactip_compliant_diameter_mm": 40.0,
+  "safe_central_feature_zone_mm": 60.0,
+  "region_category_counts": {
+    "flat": 2,
+    "edge": 4,
+    "curvature": 5,
+    "multi_touch": 2,
+    "small_feature": 3
+  },
+  "regions": [
+    {
+      "region_id": "R01",
+      "category": "flat",
+      "stimulus": "flat_reference",
+      "row": 0,
+      "column": 0,
+      "description": "Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines.",
+      "depth_range_mm": [
+        0.75,
+        5.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "flat_reference",
+      "center_board_xy_mm": [
+        -122.0,
+        122.0
+      ]
+    },
+    {
+      "region_id": "R02",
+      "category": "flat",
+      "stimulus": "flat_step_2mm",
+      "row": 0,
+      "column": 1,
+      "description": "Two planar levels separated by a 6 mm step for deep-contact crossing samples.",
+      "depth_range_mm": [
+        0.75,
+        4.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "flat_step_6mm",
+      "center_board_xy_mm": [
+        -48.0,
+        122.0
+      ]
+    },
+    {
+      "region_id": "R03",
+      "category": "edge",
+      "stimulus": "sharp_edge_x",
+      "row": 0,
+      "column": 2,
+      "description": "An 8 mm high sharp roof edge running along local X for large-indentation edge contact.",
+      "depth_range_mm": [
+        0.5,
+        3.5
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "sharp_edge_x",
+      "center_board_xy_mm": [
+        48.0,
+        122.0
+      ]
+    },
+    {
+      "region_id": "R04",
+      "category": "edge",
+      "stimulus": "sharp_edge_y",
+      "row": 0,
+      "column": 3,
+      "description": "An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.",
+      "depth_range_mm": [
+        0.5,
+        3.5
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "sharp_edge_y",
+      "center_board_xy_mm": [
+        122.0,
+        122.0
+      ]
+    },
+    {
+      "region_id": "R05",
+      "category": "edge",
+      "stimulus": "sharp_edge_diagonal",
+      "row": 1,
+      "column": 0,
+      "description": "An 8 mm high sharp roof edge at 45 degrees to the board axes.",
+      "depth_range_mm": [
+        0.5,
+        3.5
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "sharp_edge_diagonal",
+      "center_board_xy_mm": [
+        -122.0,
+        48.0
+      ]
+    },
+    {
+      "region_id": "R06",
+      "category": "edge",
+      "stimulus": "rounded_ridge",
+      "row": 1,
+      "column": 1,
+      "description": "A smooth 8 mm high rounded ridge with a 6 mm lateral scale.",
+      "depth_range_mm": [
+        0.5,
+        4.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "rounded_ridge",
+      "center_board_xy_mm": [
+        -48.0,
+        48.0
+      ]
+    },
+    {
+      "region_id": "R07",
+      "category": "curvature",
+      "stimulus": "convex_cylinder",
+      "row": 1,
+      "column": 2,
+      "description": "A broad convex cylindrical cap with 8 mm peak-to-rim relief.",
+      "depth_range_mm": [
+        0.75,
+        4.5
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "convex_cylinder",
+      "center_board_xy_mm": [
+        48.0,
+        48.0
+      ]
+    },
+    {
+      "region_id": "R08",
+      "category": "curvature",
+      "stimulus": "concave_cylinder",
+      "row": 1,
+      "column": 3,
+      "description": "A broad concave cylindrical cup with 8 mm rim-to-center relief.",
+      "depth_range_mm": [
+        0.75,
+        4.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "concave_cylinder",
+      "center_board_xy_mm": [
+        122.0,
+        48.0
+      ]
+    },
+    {
+      "region_id": "R09",
+      "category": "curvature",
+      "stimulus": "convex_sphere",
+      "row": 2,
+      "column": 0,
+      "description": "A convex spherical cap with 8 mm peak-to-rim relief.",
+      "depth_range_mm": [
+        0.75,
+        4.5
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "convex_sphere",
+      "center_board_xy_mm": [
+        -122.0,
+        -48.0
+      ]
+    },
+    {
+      "region_id": "R10",
+      "category": "curvature",
+      "stimulus": "concave_sphere",
+      "row": 2,
+      "column": 1,
+      "description": "A concave spherical cup with 8 mm rim-to-center relief.",
+      "depth_range_mm": [
+        0.75,
+        4.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "concave_sphere",
+      "center_board_xy_mm": [
+        -48.0,
+        -48.0
+      ]
+    },
+    {
+      "region_id": "R11",
+      "category": "curvature",
+      "stimulus": "saddle",
+      "row": 2,
+      "column": 2,
+      "description": "A saddle with opposite signed principal curvatures and a 12 mm total range.",
+      "depth_range_mm": [
+        0.75,
+        4.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "saddle",
+      "center_board_xy_mm": [
+        48.0,
+        -48.0
+      ]
+    },
+    {
+      "region_id": "R12",
+      "category": "multi_touch",
+      "stimulus": "double_bump_12mm",
+      "row": 2,
+      "column": 3,
+      "description": "Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.",
+      "depth_range_mm": [
+        0.5,
+        3.5
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "double_bump_12mm",
+      "center_board_xy_mm": [
+        122.0,
+        -48.0
+      ]
+    },
+    {
+      "region_id": "R13",
+      "category": "multi_touch",
+      "stimulus": "triple_bump_9mm",
+      "row": 3,
+      "column": 0,
+      "description": "Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.",
+      "depth_range_mm": [
+        0.5,
+        3.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "triple_bump_9mm",
+      "center_board_xy_mm": [
+        -122.0,
+        -122.0
+      ]
+    },
+    {
+      "region_id": "R14",
+      "category": "small_feature",
+      "stimulus": "fine_ridges_3mm",
+      "row": 3,
+      "column": 1,
+      "description": "Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.",
+      "depth_range_mm": [
+        0.5,
+        3.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "fine_ridges_3mm",
+      "center_board_xy_mm": [
+        -48.0,
+        -122.0
+      ]
+    },
+    {
+      "region_id": "R15",
+      "category": "small_feature",
+      "stimulus": "micro_dot_lattice_5mm",
+      "row": 3,
+      "column": 2,
+      "description": "A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.",
+      "depth_range_mm": [
+        0.5,
+        3.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "micro_dot_lattice_5mm",
+      "center_board_xy_mm": [
+        48.0,
+        -122.0
+      ]
+    },
+    {
+      "region_id": "R16",
+      "category": "small_feature",
+      "stimulus": "micro_checker_4mm",
+      "row": 3,
+      "column": 3,
+      "description": "A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.",
+      "depth_range_mm": [
+        0.5,
+        3.0
+      ],
+      "samples_per_region": 512,
+      "stimulus_display": "micro_checker_4mm",
+      "center_board_xy_mm": [
+        122.0,
+        -122.0
+      ]
+    }
+  ],
+  "tiles": [
+    {
+      "tile_id": "tile_nw",
+      "stl": "tactile_gan_coverage_board_340mm_tile_nw.stl",
+      "center_board_xy_mm": [
+        -85.0,
+        85.0
+      ],
+      "m6_hole_centres_board_xy_mm": [
+        [
+          -160.0,
+          10.0
+        ],
+        [
+          -160.0,
+          160.0
+        ],
+        [
+          -10.0,
+          10.0
+        ],
+        [
+          -10.0,
+          160.0
+        ]
+      ],
+      "region_ids": [
+        "R01",
+        "R02",
+        "R05",
+        "R06"
+      ],
+      "local_stl_bounds_mm": [
+        [
+          -85.0,
+          -85.0,
+          0.0
+        ],
+        [
+          85.0,
+          85.0,
+          18.0
+        ]
+      ],
+      "face_count": 465458,
+      "watertight": true,
+      "m6_hole_centres_tile_local_xy_mm": [
+        [
+          -75.0,
+          -75.0
+        ],
+        [
+          -75.0,
+          75.0
+        ],
+        [
+          75.0,
+          -75.0
+        ],
+        [
+          75.0,
+          75.0
+        ]
+      ],
+      "m6_hole_pitch_mm": [
+        150.0,
+        150.0
+      ]
+    },
+    {
+      "tile_id": "tile_ne",
+      "stl": "tactile_gan_coverage_board_340mm_tile_ne.stl",
+      "center_board_xy_mm": [
+        85.0,
+        85.0
+      ],
+      "m6_hole_centres_board_xy_mm": [
+        [
+          10.0,
+          10.0
+        ],
+        [
+          10.0,
+          160.0
+        ],
+        [
+          160.0,
+          10.0
+        ],
+        [
+          160.0,
+          160.0
+        ]
+      ],
+      "region_ids": [
+        "R03",
+        "R04",
+        "R07",
+        "R08"
+      ],
+      "local_stl_bounds_mm": [
+        [
+          -85.0,
+          -85.0,
+          0.0
+        ],
+        [
+          85.0,
+          85.0,
+          18.0
+        ]
+      ],
+      "face_count": 465464,
+      "watertight": true,
+      "m6_hole_centres_tile_local_xy_mm": [
+        [
+          -75.0,
+          -75.0
+        ],
+        [
+          -75.0,
+          75.0
+        ],
+        [
+          75.0,
+          -75.0
+        ],
+        [
+          75.0,
+          75.0
+        ]
+      ],
+      "m6_hole_pitch_mm": [
+        150.0,
+        150.0
+      ]
+    },
+    {
+      "tile_id": "tile_sw",
+      "stl": "tactile_gan_coverage_board_340mm_tile_sw.stl",
+      "center_board_xy_mm": [
+        -85.0,
+        -85.0
+      ],
+      "m6_hole_centres_board_xy_mm": [
+        [
+          -160.0,
+          -160.0
+        ],
+        [
+          -160.0,
+          -10.0
+        ],
+        [
+          -10.0,
+          -160.0
+        ],
+        [
+          -10.0,
+          -10.0
+        ]
+      ],
+      "region_ids": [
+        "R09",
+        "R10",
+        "R13",
+        "R14"
+      ],
+      "local_stl_bounds_mm": [
+        [
+          -85.0,
+          -85.0,
+          0.0
+        ],
+        [
+          85.0,
+          85.0,
+          16.854909896850586
+        ]
+      ],
+      "face_count": 465460,
+      "watertight": true,
+      "m6_hole_centres_tile_local_xy_mm": [
+        [
+          -75.0,
+          -75.0
+        ],
+        [
+          -75.0,
+          75.0
+        ],
+        [
+          75.0,
+          -75.0
+        ],
+        [
+          75.0,
+          75.0
+        ]
+      ],
+      "m6_hole_pitch_mm": [
+        150.0,
+        150.0
+      ]
+    },
+    {
+      "tile_id": "tile_se",
+      "stl": "tactile_gan_coverage_board_340mm_tile_se.stl",
+      "center_board_xy_mm": [
+        85.0,
+        -85.0
+      ],
+      "m6_hole_centres_board_xy_mm": [
+        [
+          10.0,
+          -160.0
+        ],
+        [
+          10.0,
+          -10.0
+        ],
+        [
+          160.0,
+          -160.0
+        ],
+        [
+          160.0,
+          -10.0
+        ]
+      ],
+      "region_ids": [
+        "R11",
+        "R12",
+        "R15",
+        "R16"
+      ],
+      "local_stl_bounds_mm": [
+        [
+          -85.0,
+          -85.0,
+          0.0
+        ],
+        [
+          85.0,
+          85.0,
+          17.32231330871582
+        ]
+      ],
+      "face_count": 465462,
+      "watertight": true,
+      "m6_hole_centres_tile_local_xy_mm": [
+        [
+          -75.0,
+          -75.0
+        ],
+        [
+          -75.0,
+          75.0
+        ],
+        [
+          75.0,
+          -75.0
+        ],
+        [
+          75.0,
+          75.0
+        ]
+      ],
+      "m6_hole_pitch_mm": [
+        150.0,
+        150.0
+      ]
+    }
+  ],
+  "sampling_site_count": 144,
+  "samples_per_region": 512,
+  "total_target_pairs": 8192,
+  "urdf": "tactile_gan_coverage_board_340mm.urdf",
+  "sampling_sites": "tactile_gan_coverage_board_340mm_sampling_sites.csv",
+  "preview": "tactile_gan_coverage_board_340mm_mountpitch150_preview.png",
+  "m6_tile_hole_pitch_mm": 150.0,
+  "mounting_variant": "Existing 156 mm tile holes filled and redrilled at local +/-75 mm; tactile geometry unchanged."
+}

@@ -1,0 +1,145 @@
+site_id,region_id,category,stimulus,stimulus_display,height_profile,board_x_mm,board_y_mm,expected_surface_z_mm,recommended_depth_min_mm,recommended_depth_max_mm,sampling_jitter_radius_mm,notes
+R01_S01,R01,flat,flat_reference,flat_reference,deep-contact,-129.0,115.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S02,R01,flat,flat_reference,flat_reference,deep-contact,-129.0,122.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S03,R01,flat,flat_reference,flat_reference,deep-contact,-129.0,129.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S04,R01,flat,flat_reference,flat_reference,deep-contact,-122.0,115.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S05,R01,flat,flat_reference,flat_reference,deep-contact,-122.0,122.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S06,R01,flat,flat_reference,flat_reference,deep-contact,-122.0,129.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S07,R01,flat,flat_reference,flat_reference,deep-contact,-115.0,115.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S08,R01,flat,flat_reference,flat_reference,deep-contact,-115.0,122.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R01_S09,R01,flat,flat_reference,flat_reference,deep-contact,-115.0,129.0,10.0,1.0,8.0,4.0,"Broad planar reference patch for controlled 2-8 mm indentation, lighting, and pose baselines."
+R02_S01,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-55.0,115.0,7.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S02,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-55.0,122.0,7.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S03,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-55.0,129.0,7.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S04,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-48.0,115.0,13.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S05,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-48.0,122.0,13.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S06,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-48.0,129.0,13.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S07,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-41.0,115.0,13.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S08,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-41.0,122.0,13.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R02_S09,R02,flat,flat_step_2mm,flat_step_6mm,deep-contact,-41.0,129.0,13.0,1.0,8.0,4.0,Two planar levels separated by a 6 mm step for deep-contact crossing samples.
+R03_S01,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,36.0,120.5,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S02,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,36.0,122.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S03,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,36.0,123.5,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S04,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,48.0,120.5,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S05,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,48.0,122.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S06,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,48.0,123.5,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S07,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,60.0,120.5,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S08,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,60.0,122.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R03_S09,R03,edge,sharp_edge_x,sharp_edge_x,deep-contact,60.0,123.5,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local X for large-indentation edge contact.
+R04_S01,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,120.5,110.0,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S02,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,120.5,122.0,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S03,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,120.5,134.0,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S04,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,122.0,110.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S05,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,122.0,122.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S06,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,122.0,134.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S07,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,123.5,110.0,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S08,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,123.5,122.0,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R04_S09,R04,edge,sharp_edge_y,sharp_edge_y,deep-contact,123.5,134.0,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge running along local Y for large-indentation edge contact.
+R05_S01,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-131.5459,40.5754,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S02,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-130.4853,39.5147,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S03,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-129.4246,38.4541,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S04,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-123.0607,49.0607,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S05,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-122.0,48.0,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S06,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-120.9393,46.9393,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S07,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-114.5754,57.5459,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S08,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-113.5147,56.4853,18.0,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R05_S09,R05,edge,sharp_edge_diagonal,sharp_edge_diagonal,deep-contact,-112.4541,55.4246,16.5,0.75,6.0,1.5,An 8 mm high sharp roof edge at 45 degrees to the board axes.
+R06_S01,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-49.5,36.0,17.7539,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S02,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-49.5,48.0,17.7539,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S03,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-49.5,60.0,17.7539,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S04,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-48.0,36.0,18.0,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S05,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-48.0,48.0,18.0,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S06,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-48.0,60.0,18.0,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S07,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-46.5,36.0,17.7539,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S08,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-46.5,48.0,17.7539,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R06_S09,R06,edge,rounded_ridge,rounded_ridge,deep-contact,-46.5,60.0,17.7539,0.75,6.0,1.5,A smooth 8 mm high rounded ridge with a 6 mm lateral scale.
+R07_S01,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,41.0,41.0,14.5792,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S02,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,41.0,48.0,14.5792,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S03,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,41.0,55.0,14.5792,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S04,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,48.0,41.0,14.8,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S05,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,48.0,48.0,14.8,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S06,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,48.0,55.0,14.8,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S07,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,55.0,41.0,14.5792,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S08,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,55.0,48.0,14.5792,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R07_S09,R07,curvature,convex_cylinder,convex_cylinder,deep-contact,55.0,55.0,14.5792,1.0,8.0,4.0,A broad convex cylindrical cap with 8 mm peak-to-rim relief.
+R08_S01,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,115.0,41.0,7.0208,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S02,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,115.0,48.0,7.0208,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S03,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,115.0,55.0,7.0208,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S04,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,122.0,41.0,6.8,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S05,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,122.0,48.0,6.8,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S06,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,122.0,55.0,6.8,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S07,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,129.0,41.0,7.0208,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S08,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,129.0,48.0,7.0208,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R08_S09,R08,curvature,concave_cylinder,concave_cylinder,deep-contact,129.0,55.0,7.0208,1.0,8.0,4.0,A broad concave cylindrical cup with 8 mm rim-to-center relief.
+R09_S01,R09,curvature,convex_sphere,convex_sphere,deep-contact,-129.0,-55.0,14.3519,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S02,R09,curvature,convex_sphere,convex_sphere,deep-contact,-129.0,-48.0,14.5792,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S03,R09,curvature,convex_sphere,convex_sphere,deep-contact,-129.0,-41.0,14.3519,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S04,R09,curvature,convex_sphere,convex_sphere,deep-contact,-122.0,-55.0,14.5792,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S05,R09,curvature,convex_sphere,convex_sphere,deep-contact,-122.0,-48.0,14.8,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S06,R09,curvature,convex_sphere,convex_sphere,deep-contact,-122.0,-41.0,14.5792,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S07,R09,curvature,convex_sphere,convex_sphere,deep-contact,-115.0,-55.0,14.3519,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S08,R09,curvature,convex_sphere,convex_sphere,deep-contact,-115.0,-48.0,14.5792,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R09_S09,R09,curvature,convex_sphere,convex_sphere,deep-contact,-115.0,-41.0,14.3519,1.0,8.0,4.0,A convex spherical cap with 8 mm peak-to-rim relief.
+R10_S01,R10,curvature,concave_sphere,concave_sphere,deep-contact,-55.0,-55.0,7.2481,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S02,R10,curvature,concave_sphere,concave_sphere,deep-contact,-55.0,-48.0,7.0208,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S03,R10,curvature,concave_sphere,concave_sphere,deep-contact,-55.0,-41.0,7.2481,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S04,R10,curvature,concave_sphere,concave_sphere,deep-contact,-48.0,-55.0,7.0208,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S05,R10,curvature,concave_sphere,concave_sphere,deep-contact,-48.0,-48.0,6.8,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S06,R10,curvature,concave_sphere,concave_sphere,deep-contact,-48.0,-41.0,7.0208,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S07,R10,curvature,concave_sphere,concave_sphere,deep-contact,-41.0,-55.0,7.2481,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S08,R10,curvature,concave_sphere,concave_sphere,deep-contact,-41.0,-48.0,7.0208,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R10_S09,R10,curvature,concave_sphere,concave_sphere,deep-contact,-41.0,-41.0,7.2481,1.0,8.0,4.0,A concave spherical cup with 8 mm rim-to-center relief.
+R11_S01,R11,curvature,saddle,saddle,deep-contact,41.0,-55.0,11.0,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S02,R11,curvature,saddle,saddle,deep-contact,41.0,-48.0,11.3442,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S03,R11,curvature,saddle,saddle,deep-contact,41.0,-41.0,11.0,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S04,R11,curvature,saddle,saddle,deep-contact,48.0,-55.0,10.6558,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S05,R11,curvature,saddle,saddle,deep-contact,48.0,-48.0,11.0,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S06,R11,curvature,saddle,saddle,deep-contact,48.0,-41.0,10.6558,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S07,R11,curvature,saddle,saddle,deep-contact,55.0,-55.0,11.0,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S08,R11,curvature,saddle,saddle,deep-contact,55.0,-48.0,11.3442,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R11_S09,R11,curvature,saddle,saddle,deep-contact,55.0,-41.0,11.0,1.0,8.0,4.0,A saddle with opposite signed principal curvatures and a 12 mm total range.
+R12_S01,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,117.0,-53.0,11.6027,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S02,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,117.0,-48.0,16.1489,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S03,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,117.0,-43.0,11.6027,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S04,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,122.0,-53.0,10.2356,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S05,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,122.0,-48.0,12.9,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S06,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,122.0,-43.0,10.2356,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S07,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,127.0,-53.0,11.6027,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S08,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,127.0,-48.0,16.1489,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R12_S09,R12,multi_touch,double_bump_12mm,double_bump_12mm,deep-contact,127.0,-43.0,11.6027,0.75,6.5,4.0,Two rounded protrusions with 12 mm centre spacing and approximately 8 mm peak relief.
+R13_S01,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-127.0,-127.0,14.874,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S02,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-127.0,-122.0,15.107,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S03,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-127.0,-117.0,11.9981,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S04,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-122.0,-127.0,14.7474,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S05,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-122.0,-122.0,16.8254,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S06,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-122.0,-117.0,16.3009,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S07,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-117.0,-127.0,14.874,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S08,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-117.0,-122.0,15.107,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R13_S09,R13,multi_touch,triple_bump_9mm,triple_bump_9mm,deep-contact,-117.0,-117.0,11.9981,0.75,6.5,4.0,Three rounded protrusions at 9 mm pitch and approximately 7.5 mm peak relief.
+R14_S01,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-55.0,-129.0,9.425,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S02,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-55.0,-122.0,9.425,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S03,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-55.0,-115.0,9.425,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S04,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-48.0,-129.0,11.3,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S05,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-48.0,-122.0,11.3,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S06,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-48.0,-115.0,11.3,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S07,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-41.0,-129.0,9.425,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S08,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-41.0,-122.0,9.425,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R14_S09,R14,small_feature,fine_ridges_3mm,fine_ridges_3mm,deep-contact,-41.0,-115.0,9.425,0.5,4.0,1.5,Parallel 3 mm-pitch ridges with 2.5 mm peak-to-trough amplitude.
+R15_S01,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,43.0,-127.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S02,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,43.0,-122.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S03,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,43.0,-117.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S04,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,48.0,-127.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S05,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,48.0,-122.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S06,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,48.0,-117.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S07,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,53.0,-127.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S08,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,53.0,-122.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R15_S09,R15,small_feature,micro_dot_lattice_5mm,micro_dot_lattice_5mm,deep-contact,53.0,-117.0,12.2098,0.5,4.0,1.5,A 5 mm-pitch lattice of approximately 2.6 mm diameter rounded dots with 4 mm peak relief.
+R16_S01,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,117.0,-127.0,8.5,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S02,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,117.0,-122.0,10.1,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S03,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,117.0,-117.0,8.5,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S04,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,122.0,-127.0,10.1,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S05,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,122.0,-122.0,8.5,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S06,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,122.0,-117.0,10.1,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S07,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,127.0,-127.0,8.5,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S08,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,127.0,-122.0,10.1,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
+R16_S09,R16,small_feature,micro_checker_4mm,micro_checker_4mm,deep-contact,127.0,-117.0,8.5,0.5,4.0,1.5,A 4 mm checker pattern with 1.6 mm steps for high-depth small-scale contrast.
