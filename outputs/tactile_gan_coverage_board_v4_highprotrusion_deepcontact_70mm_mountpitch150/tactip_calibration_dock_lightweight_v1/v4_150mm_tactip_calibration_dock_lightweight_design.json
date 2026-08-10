@@ -1,0 +1,91 @@
+{
+  "schema": "tactile_gan_coverage_board.v4.mountpitch150.lightweight_dock.v1",
+  "units": "mm",
+  "tile_frame": {
+    "origin": "centre of one printed 170 x 170 mm v4 tile at its bottom plane",
+    "x_positive": "tile local +X",
+    "y_positive": "from the south dock edge into the tactile board",
+    "z_positive": "physical up"
+  },
+  "board_interface": {
+    "tile_size_mm": 170.0,
+    "board_base_top_z_mm": 6.0,
+    "shared_board_m6_holes_local_xy_mm": [
+      [
+        -75.0,
+        -75.0
+      ],
+      [
+        75.0,
+        -75.0
+      ]
+    ],
+    "shared_board_hole_pitch_mm": 150.0,
+    "m6_clearance_diameter_mm": 6.0,
+    "dock_tab_clearance_above_board_mm": 0.3,
+    "mounting_note": "Secure all four board-tile holes to a flat table/base first. Then use two longer M6 screws through the two dock U-slots and the south pair at (-75,-75) and (75,-75) mm. The dock feet sit on the same table; the open side of each U-slot must face tile local +Y."
+  },
+  "tactip_reference": {
+    "tool": 2,
+    "tool_tcp_assumption": "Tool(2) origin is the TacTip compliant contact apex.",
+    "rigid_flange_diameter_mm": 49.5,
+    "guide_inner_diameter_mm": 50.8,
+    "guide_outer_diameter_mm": 60.0,
+    "soft_tip_through_diameter_mm": 44.0,
+    "seat_top_z_mm": 52.0,
+    "apex_below_shoulder_mm": 40.0,
+    "nominal_seated_tool_tcp_local_mm": [
+      0.0,
+      -139.0,
+      12.0
+    ],
+    "cable_slot_direction": "tile local -Y",
+    "cable_slot_width_mm": 8.0
+  },
+  "reference_pad": {
+    "centre_local_mm": [
+      0.0,
+      -110.0,
+      8.75
+    ],
+    "top_z_mm": 12.0,
+    "usable_flat_size_mm": [
+      50.0,
+      38.0
+    ],
+    "purpose": "Optional visual-contact / image-change check before executing board sampling."
+  },
+  "sampler_transform": {
+    "mapping": "p_base = p_seated_tcp + R_tile_to_base @ (p_tile - p_seated_tool_tcp_local)",
+    "note": "Teach the seated Tool(2) TCP once after the fixture is bolted down. Keep Joint 6 and the cable exit orientation unchanged across the run."
+  },
+  "print": {
+    "part_count": 1,
+    "material": "PETG preferred; PLA+ is acceptable for calibration-only use.",
+    "orientation": "Print with both narrow feet on the build plate and the locating ring upward.",
+    "settings": "0.28 mm layers, 4 walls, 18-22% gyroid infill.",
+    "supports": "Normally no support. Enable support only for the inside of the locating ring if the slicer flags a bridge.",
+    "lightweight_design": "Two 14 mm feet, two 10 mm solid gussets, and open central space replace a full base plate."
+  },
+  "workflow": [
+    "Bolt the 170 mm v4 tile flat to the table through all four of its M6 holes.",
+    "Loosen the two southern screws, slide the dock U-slots in from tile local -Y, then retighten the M6 screws.",
+    "Seat the TacTip rigid flange in the ring, with the cable in the outboard slot.",
+    "Record the Tool(2) TCP while seated. This becomes the repeatable rest datum for that board setup.",
+    "Move vertically out of the dock before moving over a tactile cell; use image-change contact detection at every sampling site."
+  ],
+  "stl": "outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/tactip_calibration_dock_lightweight_v1/v4_150mm_tactip_calibration_dock_lightweight.stl",
+  "stl_sha256": "c68b55f8e1dbc8150ab445df9c2184551ad4936521e33fb1bb2dcbcf0ba539e0",
+  "extent_mm": [
+    170.0,
+    114.5,
+    62.0
+  ],
+  "volume_mm3": 84219.10973562724,
+  "watertight": true,
+  "components": 1,
+  "tile_preview_stl": "outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/tactile_gan_coverage_board_340mm_tile_nw.stl",
+  "tile_preview_stl_sha256": "9fcbbe6e25a23410c0d9582b6702539a8ec41fcec31a7da6f5f34302d27c7637",
+  "preview": "outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/tactip_calibration_dock_lightweight_v1/v4_150mm_tactip_calibration_dock_lightweight_preview.png",
+  "installation_layout": "outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/tactip_calibration_dock_lightweight_v1/v4_150mm_tactip_calibration_dock_installation_layout.png"
+}
