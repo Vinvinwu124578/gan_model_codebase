@@ -1,0 +1,9 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+
+# Machine- and table-specific robot calibration must never be shared.
+outputs/**/profiles/
+outputs/**/cr3_coverage_board_runs/
+outputs/plans/
