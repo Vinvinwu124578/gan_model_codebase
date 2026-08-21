@@ -19,6 +19,9 @@
 tools/
   auto_cr3_v4_150mm_coverage_board_sampler.py   # 推荐入口
   auto_cr3_coverage_board_sampler.py            # 完整规划与采集实现
+  preprocess_tactip_markers.py                  # 批量 Hough + 颜色二值化
+  tactip_hough_chromatic.py                     # 批处理与在线采样共用算法
+  tactip_runtime_preprocess.py                  # 自动采样在线预处理封装
   ...                                           # CR3、相机、预处理与硬件生成依赖
 
 outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/
@@ -48,6 +51,38 @@ python -m pip install -r requirements.txt
 
 macOS 还需要在“系统设置 -> 隐私与安全性 -> 相机”中允许 Terminal/Python 使用相机。
 `tkinter` 由 Python 系统安装提供，不在 `requirements.txt` 中。
+
+## TacTip image preprocessing
+
+默认预处理已替换为 Hough 圆边界检测与蓝黄颜色过滤：
+
+1. 灰度梯度只用于 Hough 圆周投票，不寻找最亮像素；
+2. 对每个圆内部计算 `2B-G-R` 中位数，保留蓝灰 marker，排除金黄玻璃反光；
+3. 使用当前图片实测的圆心和半径生成严格 `0/255` 二值图；
+4. 原分辨率与 `256 x 256` 输出都必须保持 331 个独立连通域，否则拒绝该帧；
+5. 原始相机照片永远保留，不会被预处理图覆盖。
+
+处理单张图片：
+
+```bash
+.venv/bin/python tools/preprocess_tactip_markers.py \
+  --input /absolute/path/to/tactip.png \
+  --output-dir outputs/preprocessed_test
+```
+
+处理文件夹：
+
+```bash
+.venv/bin/python tools/preprocess_tactip_markers.py \
+  --input /absolute/path/to/raw_images \
+  --glob '*.png' \
+  --output-dir outputs/preprocessed_batch
+```
+
+自动采样器默认启用同一套算法，标准模型输入保存在
+`tactip_preprocessed/model_input_256/`。使用 `--no-tactip-preprocess` 可以只保存原图。
+当前默认参数以 1280×960 实拍图为基准，圆间距、半径和 ROI padding 会随输入分辨率
+自动缩放；颜色阈值保持在原始 8-bit BGR 色域中。
 
 ## Print and assemble
 
