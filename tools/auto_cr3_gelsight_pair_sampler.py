@@ -18,6 +18,12 @@ import sys
 import time
 from pathlib import Path
 
+# Direct `python tools/...py` puts only tools/ on sys.path. Include this
+# checkout's sibling tactile_sim2real package before importing live helpers.
+project_root = str(Path(__file__).resolve().parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
 
 import cv2

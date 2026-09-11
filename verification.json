@@ -1,0 +1,26 @@
+{
+  "upstream": "https://github.com/Vinvinwu124578/gan_model_codebase",
+  "tests": {
+    "command": "python -m unittest discover -s tests -q",
+    "passed": 120,
+    "failed": 0,
+    "kind": "offline unit and integration mocks"
+  },
+  "compile_check": "tools, tests, tactile_sim2real, hardware passed",
+  "plan": {
+    "samples": 2000,
+    "elapsed_seconds_reported": 0.8,
+    "fixture": "supplied raised-crossbar STL",
+    "frame": "tile_local_geometry_only",
+    "drawn_route_samples": 6
+  },
+  "robot_or_camera_connected": false,
+  "real_ik_timing_measured": false,
+  "actual_height_accuracy_certified": false,
+  "required_real_inputs": [
+    "verified matching dock design",
+    "measured fixture TCP and tactile datum",
+    "distributed repeat and held-out measurements",
+    "independent uncertainty evidence"
+  ]
+}

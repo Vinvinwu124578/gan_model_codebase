@@ -1,0 +1,441 @@
+{
+  "schema": "dock_stl_geometry_inspection.v1",
+  "purpose": "geometry inspection only; not a fixture or motion configuration",
+  "source_file": "hardware/v4_150mm_tactip_calibration_dock_camera_style_rest_stop.stl",
+  "source_sha256": "1988cc4c00d52b72a766d19211b72afdda154012d9ae33757a3be7394471f6cf",
+  "units": "STL is unitless; millimetres are assumed from the repository design convention and dimensions",
+  "face_count": 3498,
+  "vertex_count": 1745,
+  "watertight": true,
+  "connected_solid_count": 1,
+  "bounds_numeric": [
+    [
+      -85.0,
+      -187.0,
+      0.0
+    ],
+    [
+      85.0,
+      -72.5,
+      62.0
+    ]
+  ],
+  "upward_horizontal_connected_surfaces": [
+    {
+      "z_numeric": 6.0,
+      "face_count": 30,
+      "area_numeric_squared": 1333.280029296875,
+      "bounds_numeric": [
+        [
+          -34.0,
+          -187.0,
+          6.0
+        ],
+        [
+          34.0,
+          -92.0,
+          6.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 10.0,
+      "face_count": 14,
+      "area_numeric_squared": 1050.0,
+      "bounds_numeric": [
+        [
+          -85.0,
+          -92.0,
+          10.0
+        ],
+        [
+          85.0,
+          -85.0,
+          10.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 10.3,
+      "face_count": 83,
+      "area_numeric_squared": 215.86747185111744,
+      "bounds_numeric": [
+        [
+          -84.0,
+          -86.0,
+          10.300000190734863
+        ],
+        [
+          -66.0,
+          -72.5,
+          10.300000190734863
+        ]
+      ]
+    },
+    {
+      "z_numeric": 10.3,
+      "face_count": 83,
+      "area_numeric_squared": 215.86747185111744,
+      "bounds_numeric": [
+        [
+          66.0,
+          -86.0,
+          10.300000190734863
+        ],
+        [
+          84.0,
+          -72.5,
+          10.300000190734863
+        ]
+      ]
+    },
+    {
+      "z_numeric": 12.0,
+      "face_count": 4,
+      "area_numeric_squared": 200.07288599421736,
+      "bounds_numeric": [
+        [
+          -26.0,
+          -130.0,
+          12.0
+        ],
+        [
+          -20.80518341064453,
+          -90.0,
+          12.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 12.0,
+      "face_count": 6,
+      "area_numeric_squared": 240.14577198843472,
+      "bounds_numeric": [
+        [
+          -11.194816589355469,
+          -130.0,
+          12.0
+        ],
+        [
+          -4.805183410644531,
+          -90.0,
+          12.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 12.0,
+      "face_count": 6,
+      "area_numeric_squared": 240.14577198843472,
+      "bounds_numeric": [
+        [
+          4.805183410644531,
+          -130.0,
+          12.0
+        ],
+        [
+          11.194816589355469,
+          -90.0,
+          12.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 12.0,
+      "face_count": 4,
+      "area_numeric_squared": 200.07288599421736,
+      "bounds_numeric": [
+        [
+          20.80518341064453,
+          -130.0,
+          12.0
+        ],
+        [
+          26.0,
+          -90.0,
+          12.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 25.5,
+      "face_count": 403,
+      "area_numeric_squared": 1831.075628003531,
+      "bounds_numeric": [
+        [
+          -24.899999618530273,
+          -146.0,
+          25.5
+        ],
+        [
+          24.899999618530273,
+          -88.0,
+          25.5
+        ]
+      ]
+    },
+    {
+      "z_numeric": 27.0,
+      "face_count": 50,
+      "area_numeric_squared": 146.3846009813808,
+      "bounds_numeric": [
+        [
+          -15.0,
+          -140.60000610351562,
+          27.0
+        ],
+        [
+          15.0,
+          -121.0,
+          27.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 27.0,
+      "face_count": 96,
+      "area_numeric_squared": 19.620931339013623,
+      "bounds_numeric": [
+        [
+          11.5,
+          -133.5,
+          27.0
+        ],
+        [
+          16.5,
+          -128.5,
+          27.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 52.0,
+      "face_count": 184,
+      "area_numeric_squared": 478.612400617566,
+      "bounds_numeric": [
+        [
+          -25.399999618530273,
+          -164.0696563720703,
+          52.0
+        ],
+        [
+          25.399999618530273,
+          -113.5999984741211,
+          52.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 57.0,
+      "face_count": 11,
+      "area_numeric_squared": 85.92114779271651,
+      "bounds_numeric": [
+        [
+          -35.0,
+          -147.0,
+          57.0
+        ],
+        [
+          -28.90635871887207,
+          -131.0,
+          57.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 57.0,
+      "face_count": 11,
+      "area_numeric_squared": 85.92114779271651,
+      "bounds_numeric": [
+        [
+          28.90635871887207,
+          -147.0,
+          57.0
+        ],
+        [
+          35.0,
+          -131.0,
+          57.0
+        ]
+      ]
+    },
+    {
+      "z_numeric": 62.0,
+      "face_count": 184,
+      "area_numeric_squared": 763.1147668221656,
+      "bounds_numeric": [
+        [
+          -30.0,
+          -168.7294464111328,
+          62.0
+        ],
+        [
+          30.0,
+          -109.0,
+          62.0
+        ]
+      ]
+    }
+  ],
+  "outer_rim_circle_fit": {
+    "z_numeric": 62.0,
+    "vertex_count": 91,
+    "centre_xy_numeric": [
+      8.755505622583871e-15,
+      -138.99999978616427
+    ],
+    "radius_numeric": 29.99999999125527,
+    "max_radial_residual_numeric": 6.438064826141954e-06
+  },
+  "vertical_probes": [
+    {
+      "xy_numeric": [
+        0,
+        -139
+      ],
+      "intersections": [
+        {
+          "z_numeric": 11.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 27.0,
+          "normal_z": 1.0
+        }
+      ]
+    },
+    {
+      "xy_numeric": [
+        0,
+        -140
+      ],
+      "intersections": [
+        {
+          "z_numeric": 11.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 27.0,
+          "normal_z": 1.0
+        }
+      ]
+    },
+    {
+      "xy_numeric": [
+        0,
+        -137
+      ],
+      "intersections": [
+        {
+          "z_numeric": 11.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 27.0,
+          "normal_z": 1.0
+        }
+      ]
+    },
+    {
+      "xy_numeric": [
+        0,
+        -142
+      ],
+      "intersections": [
+        {
+          "z_numeric": 11.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 25.5,
+          "normal_z": 1.0
+        }
+      ]
+    },
+    {
+      "xy_numeric": [
+        10,
+        -139
+      ],
+      "intersections": [
+        {
+          "z_numeric": 17.5,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 27.0,
+          "normal_z": 1.0
+        }
+      ]
+    },
+    {
+      "xy_numeric": [
+        20,
+        -139
+      ],
+      "intersections": [
+        {
+          "z_numeric": 0.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 6.0,
+          "normal_z": 1.0
+        },
+        {
+          "z_numeric": 11.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 25.5,
+          "normal_z": 1.0
+        }
+      ]
+    },
+    {
+      "xy_numeric": [
+        14,
+        -131
+      ],
+      "intersections": [
+        {
+          "z_numeric": 0.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 6.0,
+          "normal_z": 1.0
+        },
+        {
+          "z_numeric": 11.0,
+          "normal_z": -1.0
+        },
+        {
+          "z_numeric": 27.0,
+          "normal_z": 1.0
+        }
+      ]
+    }
+  ],
+  "conclusions": {
+    "at_assumed_ring_centre_xy": [
+      0.0,
+      -139.0
+    ],
+    "top_support_z_numeric": 27.0,
+    "broad_underlying_platform_z_numeric": 25.5,
+    "relief_above_platform_numeric": 1.5,
+    "difference_from_legacy_nominal_tip_z_12": 15.0,
+    "support_interpretation": "The highest material intersection at X=0,Y=-139 is upward-facing Z=27, so 27 is the CAD support peak there. Z=25.5 is the surrounding platform, not that peak.",
+    "legacy_comparison": "12 is the old design's nominal seated tip coordinate, not a measured physical tip location. 27-12=15 is a CAD-coordinate difference.",
+    "ring_faces": "Horizontal annular surfaces remain at Z=52 and Z=62; these surfaces alone do not identify the actual sensor seating or preload state."
+  },
+  "not_determined_by_stl": [
+    "Actual robot User/Tool frame, flange-to-TCP transform, taught dock TCP or board mounting pose.",
+    "Printed-part dimensions, deformation, shrinkage, mounting tilt or measurement uncertainty.",
+    "True TacTip apex-to-flange distance, skin preload, skin indentation or which rigid component seats against the ring.",
+    "Actual contact centre under tilt, visual detection bias, camera thresholds or tactile image reference.",
+    "Whether every board point is reachable, collision-free or accurate to 0.1 mm.",
+    "Encoded units; STL itself does not define millimetres."
+  ]
+}

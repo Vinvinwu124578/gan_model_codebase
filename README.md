@@ -1,5 +1,7 @@
 # TacTip GAN Coverage Board and CR3 Sampler
 
+新版本 `cr3-2026.09.11`（带抬高横梁）：请先阅读 [版本说明](RELEASE_NOTES.md) 和 [改进说明与实测校正流程](README_CR3_IMPROVED.md)。本版本保存在独立分支，原 `main` 版本保持不变。下文保留上游说明；本次装置不能沿用旧 v1 托座的高度基准。实际 STL 和几何报告已加入 `hardware/`，离线路线可按说明重新生成。
+
 这个仓库保存用于 TacTip sim-to-real GAN 数据采集的完整硬件与自动采样流程：
 
 - 四块可打印的高凸起几何覆盖板 STL；

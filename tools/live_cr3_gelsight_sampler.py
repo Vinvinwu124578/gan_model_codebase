@@ -170,6 +170,12 @@ def frame_to_photo_image(frame_bgr, preview_scale: float) -> tk.PhotoImage:
     return tk.PhotoImage(data=ppm, format="PPM")
 
 
+class MotionFeedbackError(RuntimeError):
+    """Motion may have occurred, but its actual final pose is unverified."""
+
+    motion_feedback_unverified = True
+
+
 class DobotCR3LiveClient:
     def __init__(self, ip: str, dashboard_port: int, move_port: int, timeout: float) -> None:
         self.ip = ip
@@ -562,9 +568,19 @@ class DobotCR3LiveClient:
         raw_sync = self.move_cmd("Sync()", timeout=180.0)
         try:
             joints_now, pose_now, raw_joints, raw_pose = self.read_state()
+            joints_now = tuple(float(value) for value in joints_now)
+            pose_now = tuple(float(value) for value in pose_now)
+            if len(joints_now) != 6 or not np.isfinite(joints_now).all():
+                raise ValueError("GetAngle did not return six finite joint values")
+            if len(pose_now) != 6 or not np.isfinite(pose_now).all():
+                raise ValueError("GetPose did not return six finite TCP values")
             return joints_now, pose_now, raw_joints, raw_pose
-        except Exception:
-            return None, tuple(float(v) for v in pose), raw_move, raw_sync
+        except Exception as exc:
+            raise MotionFeedbackError(
+                "MovL completed without verified GetAngle/GetPose feedback. "
+                "The actual robot pose is unknown; stop sampling and inspect the controller. "
+                "Do not attempt automatic recovery motion. {}: {}".format(type(exc).__name__, exc)
+            ) from exc
 
     def jog_joint(self, joint_index: int, direction: float, step: float, speed: float, user: int, tool: int) -> tuple[tuple[float, ...], tuple[float, ...], str, str]:
         joints, _raw_joints = self.read_joints()

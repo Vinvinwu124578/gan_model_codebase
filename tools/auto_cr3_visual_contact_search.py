@@ -30,7 +30,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from auto_cr3_gelsight_pair_sampler import GelSightCapture, read_quality_checked_frame
-from live_cr3_gelsight_sampler import DobotCR3LiveClient, parse_camera_source
+from live_cr3_gelsight_sampler import DobotCR3LiveClient, MotionFeedbackError, parse_camera_source
 from tactip_runtime_preprocess import add_tactip_preprocess_args, create_tactip_preprocessor
 
 
@@ -306,9 +306,17 @@ def move_and_verify(
     else:
         inverse_joints, raw_inverse = (), "IK preflight disabled"
     joints, actual, raw_joints, raw_pose = client.move_pose(expected, args.speed, args.user, args.tool)
-    if actual is None:
-        raise RuntimeError("{} returned no GetPose after MovL".format(label))
-    actual_pose = finite_pose(actual, label + " actual TCP")
+    try:
+        # Older clients returned (None, target, MovL_reply, Sync_reply) after
+        # losing GetPose feedback. Never accept that target as a measurement.
+        verified_joints = finite_pose(joints, label + " measured joints")
+        actual_pose = finite_pose(actual, label + " actual TCP")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MotionFeedbackError(
+            "{} returned invalid GetAngle/GetPose feedback after MovL. "
+            "The actual robot pose is unverified; stop sampling and inspect the controller. "
+            "Do not attempt automatic recovery motion.".format(label)
+        ) from exc
     position_error = position_error_mm(expected, actual_pose)
     rotation_error = rotation_error_deg(expected, actual_pose)
     mode_after, raw_mode_after = client.read_robot_mode()
@@ -327,7 +335,7 @@ def move_and_verify(
             "solution_joints": [float(value) for value in inverse_joints],
             "raw": raw_inverse,
         },
-        "joint_count": len(joints or ()),
+        "joint_count": len(verified_joints),
     }
     if mode_after != 5:
         raise RuntimeError("{} ended with RobotMode {} ({})".format(label, mode_after, raw_mode_after))

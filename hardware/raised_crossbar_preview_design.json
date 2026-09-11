@@ -1,0 +1,18 @@
+{
+  "schema": "coverage_board_dock_geometry_preview.v1",
+  "geometry_preview_only": true,
+  "units": "mm (assumed from repository dimensions; STL is unitless)",
+  "purpose": "Offline geometry preview of the supplied STL. Not a measured TCP or an executable fixture calibration.",
+  "tactip_reference": {
+    "tool": 2,
+    "nominal_seated_tool_tcp_local_mm": [0.0, -139.0, 27.0],
+    "tool_tcp_assumption": "Preview marker at CAD support peak only; actual Tool(2), apex preload and pose are unmeasured."
+  },
+  "stl": "hardware/v4_150mm_tactip_calibration_dock_camera_style_rest_stop.stl",
+  "stl_sha256": "1988cc4c00d52b72a766d19211b72afdda154012d9ae33757a3be7394471f6cf",
+  "geometry_evidence": "hardware/geometry_report.json",
+  "unverified_dimensions": ["TacTip footprint diameter uses the existing display fallback; no sensor CAD supplied", "Printed part dimensions and mounted board height"],
+  "legacy_nominal_z_mm": 12.0,
+  "cad_support_z_mm": 27.0,
+  "cad_difference_mm": 15.0
+}
