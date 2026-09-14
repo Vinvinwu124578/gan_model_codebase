@@ -281,6 +281,21 @@ def _strong_glare_fallback_configs(
                 minimum_blue_yellow_score=15.0,
             ),
         ),
+        (
+            "low_contrast_rim_2_to_6px",
+            replace(
+                config,
+                # Auto-exposure can make the blue marker boundary shallow
+                # without changing its circle geometry.  Lower Canny only as
+                # a final fallback and retain radius, spacing, chromatic and
+                # exact-count validation.
+                hough_vote_threshold=10.0,
+                minimum_radius_px=4.0,
+                maximum_radius_px=12.0,
+                canny_high_threshold=45.0,
+                minimum_blue_yellow_score=10.0,
+            ),
+        ),
     ]
     unique: list[tuple[str, HoughChromaticConfig]] = []
     seen: set[HoughChromaticConfig] = set()
