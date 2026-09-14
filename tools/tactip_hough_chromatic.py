@@ -9,7 +9,7 @@ number of markers remains separated before and after 256px conversion.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import cv2
@@ -209,6 +209,101 @@ def detect_marker_circles(
     return accepted, rejected, diagnostics
 
 
+def _strong_glare_fallback_configs(
+    config: HoughChromaticConfig,
+) -> list[tuple[str, HoughChromaticConfig]]:
+    """Return marker-sized circle searches used only after primary failure.
+
+    At 640x480 the 331-pin sensor markers occupy roughly four to seven image
+    pixels in radius.  Strong glass glare can create smaller Hough circles or
+    suppress shallow marker edges.  This fallback raises the lower radius
+    bound and widens the upper bound, but keeps the caller's marker count and
+    chromatic glare criterion intact.  It is deliberately geometry-only: no
+    saved marker positions or image template are consulted.
+    """
+    proposals = [
+        (
+            "wide_4_to_7px",
+            replace(
+                config,
+                hough_vote_threshold=10.0,
+                minimum_radius_px=7.0,
+                maximum_radius_px=14.0,
+                canny_high_threshold=80.0,
+            ),
+        ),
+        (
+            "tight_3_to_6px",
+            replace(
+                config,
+                hough_vote_threshold=10.0,
+                minimum_radius_px=6.0,
+                maximum_radius_px=12.0,
+                canny_high_threshold=80.0,
+            ),
+        ),
+        (
+            "wide_high_canny",
+            replace(
+                config,
+                hough_vote_threshold=10.0,
+                minimum_radius_px=7.0,
+                maximum_radius_px=16.0,
+                canny_high_threshold=95.0,
+            ),
+        ),
+    ]
+    unique: list[tuple[str, HoughChromaticConfig]] = []
+    seen: set[HoughChromaticConfig] = set()
+    for name, proposal in proposals:
+        if proposal != config and proposal not in seen:
+            unique.append((name, proposal))
+            seen.add(proposal)
+    return unique
+
+
+def _detect_marker_circles_with_glare_fallback(
+    image: np.ndarray,
+    config: HoughChromaticConfig,
+) -> tuple[list[dict[str, float]], list[dict[str, float]], dict[str, Any], HoughChromaticConfig]:
+    """Run the normal detector, then a deterministic geometry fallback.
+
+    The fallback is only eligible when the normal configuration does not
+    yield the exact required count.  Frames that already pass retain their
+    original detector settings and outputs.
+    """
+    try:
+        accepted, rejected, diagnostics = detect_marker_circles(image, config)
+        diagnostics["detector_mode"] = "primary"
+        return accepted, rejected, diagnostics, config
+    except MarkerDetectionError as primary_error:
+        fallback_attempts: list[dict[str, Any]] = []
+        for name, fallback in _strong_glare_fallback_configs(config):
+            try:
+                accepted, rejected, diagnostics = detect_marker_circles(image, fallback)
+            except MarkerDetectionError as fallback_error:
+                fallback_attempts.append(
+                    {
+                        "name": name,
+                        "configuration": config_dict(fallback),
+                        "diagnostics": fallback_error.diagnostics,
+                    }
+                )
+                continue
+            diagnostics["detector_mode"] = "strong_glare_geometry_fallback:{}".format(name)
+            diagnostics["primary_diagnostics"] = primary_error.diagnostics
+            diagnostics["primary_configuration"] = config_dict(config)
+            diagnostics["prior_glare_fallback_attempts"] = fallback_attempts
+            return accepted, rejected, diagnostics, fallback
+        primary_diagnostics = dict(primary_error.diagnostics)
+        primary_diagnostics["detector_mode"] = "primary_and_glare_fallback_failed"
+        primary_diagnostics["glare_fallback_attempts"] = fallback_attempts
+        raise MarkerDetectionError(
+            "Primary and strong-glare Hough searches did not produce the required marker count",
+            primary_diagnostics,
+        ) from primary_error
+
+
 def _crop_bounds(points: np.ndarray, shape: tuple[int, int], padding: int) -> tuple[int, int, int, int]:
     height, width = shape
     left = max(0, int(np.floor(np.min(points[:, 0]))) - padding)
@@ -252,15 +347,18 @@ def process_frame(
     config: HoughChromaticConfig | None = None,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], list[dict[str, float]]]:
     config = config or HoughChromaticConfig()
-    accepted, rejected, diagnostics = detect_marker_circles(image, config)
+    accepted, rejected, diagnostics, active_config = _detect_marker_circles_with_glare_fallback(
+        image, config
+    )
+    diagnostics["effective_configuration"] = config_dict(active_config)
     geometry = diagnostics["scaled_geometry"]
     binary = np.zeros(image.shape[:2], dtype=np.uint8)
     render_radii: list[float] = []
     for record in accepted:
         radius = max(
             2.0,
-            record["hough_radius_px"] * config.render_radius_scale
-            + config.render_radius_offset_px * float(geometry["scale"]),
+            record["hough_radius_px"] * active_config.render_radius_scale
+            + active_config.render_radius_offset_px * float(geometry["scale"]),
         )
         render_radii.append(radius)
         cv2.circle(
@@ -278,11 +376,11 @@ def process_frame(
     binary_roi = binary[top:bottom, left:right]
     soft_output = cv2.resize(
         binary_roi,
-        (config.output_size, config.output_size),
+        (active_config.output_size, active_config.output_size),
         interpolation=cv2.INTER_AREA,
     )
     binary_output = np.where(
-        soft_output >= int(config.downsample_threshold), 255, 0
+        soft_output >= int(active_config.downsample_threshold), 255, 0
     ).astype(np.uint8)
     source_metrics = component_metrics(binary_roi)
     output_metrics = component_metrics(binary_output)
@@ -293,7 +391,7 @@ def process_frame(
             "output_metrics": output_metrics,
         }
     )
-    if source_metrics["components"] != config.expected_markers or output_metrics[
+    if source_metrics["components"] != active_config.expected_markers or output_metrics[
         "components"
     ] != config.expected_markers:
         raise MarkerDetectionError(
@@ -312,6 +410,8 @@ def process_frame(
         "marker_count": len(accepted),
         "rejected_glare_count": len(rejected),
         "selected_vote_threshold": diagnostics["selected_vote_threshold"],
+        "detector_mode": diagnostics["detector_mode"],
+        "effective_configuration": diagnostics["effective_configuration"],
         "crop_bounds_xyxy": diagnostics["crop_bounds_xyxy"],
         "source_components": source_metrics["components"],
         "output_components": output_metrics["components"],
