@@ -348,6 +348,151 @@ def _detect_marker_circles_with_glare_fallback(
         ) from primary_error
 
 
+def _replace_single_isolated_lattice_marker(
+    accepted: list[dict[str, float]],
+    alternatives: list[dict[str, float]],
+) -> tuple[list[dict[str, float]], dict[str, Any]]:
+    """Repair one isolated Hough outlier using only same-frame lattice support.
+
+    Exact marker count alone is insufficient when a glare circle replaces one
+    weak real marker.  This check never uses a saved marker layout or image
+    template: it measures the current frame's nearest-neighbour spacing, finds
+    one implausibly isolated accepted circle, and exchanges it only for a
+    lower-vote Hough candidate supported by at least three nearby circles in
+    the current point lattice.
+    """
+    if len(accepted) < 12 or not alternatives:
+        return accepted, {"status": "not_attempted", "reason": "insufficient circles or alternatives"}
+    points = np.asarray([[item["x_px"], item["y_px"]] for item in accepted], dtype=float)
+    distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+    np.fill_diagonal(distances, np.inf)
+    nearest = np.min(distances, axis=1)
+    spacing = float(np.median(nearest))
+    if not np.isfinite(spacing) or spacing <= 0.0:
+        return accepted, {"status": "not_attempted", "reason": "invalid lattice spacing"}
+    isolated_limit = 1.80 * spacing
+    isolated_indices = np.flatnonzero(nearest > isolated_limit)
+    if len(isolated_indices) != 1:
+        return accepted, {
+            "status": "not_needed",
+            "spacing_px": spacing,
+            "isolated_limit_px": isolated_limit,
+            "isolated_marker_count": int(len(isolated_indices)),
+        }
+
+    remove_index = int(isolated_indices[0])
+    retained = np.delete(points, remove_index, axis=0)
+    duplicate_limit = 0.70 * spacing
+    neighbour_limit = 1.60 * spacing
+    max_nearest_limit = 1.50 * spacing
+    choices: list[tuple[tuple[float, float, float, float, float], dict[str, float], np.ndarray]] = []
+    for candidate in alternatives:
+        candidate_point = np.asarray((candidate["x_px"], candidate["y_px"]), dtype=float)
+        candidate_distances = np.sort(np.linalg.norm(retained - candidate_point, axis=1))
+        if candidate_distances[0] < duplicate_limit or candidate_distances[0] > max_nearest_limit:
+            continue
+        support = int(np.count_nonzero(candidate_distances <= neighbour_limit))
+        if support < 3:
+            continue
+        local_error = float(
+            np.mean(np.abs(candidate_distances[: min(support, 4)] - spacing)) / spacing
+        )
+        # Most local neighbours, then the most regular spacing, then stronger
+        # chromatic evidence make the replacement deterministic.
+        key = (
+            -float(support),
+            local_error,
+            -float(candidate["blue_yellow_score"]),
+            float(candidate["y_px"]),
+            float(candidate["x_px"]),
+        )
+        choices.append((key, candidate, candidate_distances))
+    if not choices:
+        return accepted, {
+            "status": "unrepaired",
+            "spacing_px": spacing,
+            "isolated_limit_px": isolated_limit,
+            "removed_candidate": dict(accepted[remove_index]),
+            "alternative_count": int(len(alternatives)),
+        }
+
+    _key, replacement, replacement_distances = min(choices, key=lambda item: item[0])
+    repaired = list(accepted)
+    removed = repaired[remove_index]
+    replacement = dict(replacement)
+    replacement["accepted_reason"] = "lattice_supported_replacement"
+    repaired[remove_index] = replacement
+    return repaired, {
+        "status": "repaired",
+        "spacing_px": spacing,
+        "isolated_limit_px": isolated_limit,
+        "removed_marker": dict(removed),
+        "replacement_marker": dict(replacement),
+        "replacement_neighbour_distances_px": [
+            float(value) for value in replacement_distances[:8]
+        ],
+        "replacement_support_count": int(
+            np.count_nonzero(replacement_distances <= neighbour_limit)
+        ),
+    }
+
+
+def _repair_isolated_lattice_marker(
+    image: np.ndarray,
+    accepted: list[dict[str, float]],
+    rejected: list[dict[str, float]],
+    config: HoughChromaticConfig,
+    diagnostics: dict[str, Any],
+) -> tuple[list[dict[str, float]], list[dict[str, float]], dict[str, Any]]:
+    """Try lower-vote same-frame Hough circles only when an outlier is evident."""
+    points = np.asarray([[item["x_px"], item["y_px"]] for item in accepted], dtype=float)
+    if len(points) < 12:
+        diagnostics["lattice_repair"] = {"status": "not_attempted", "reason": "too few accepted markers"}
+        return accepted, rejected, diagnostics
+    distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+    np.fill_diagonal(distances, np.inf)
+    nearest = np.min(distances, axis=1)
+    spacing = float(np.median(nearest))
+    if int(np.count_nonzero(nearest > 1.80 * spacing)) != 1:
+        diagnostics["lattice_repair"] = {
+            "status": "not_needed",
+            "spacing_px": spacing,
+            "isolated_marker_count": int(np.count_nonzero(nearest > 1.80 * spacing)),
+        }
+        return accepted, rejected, diagnostics
+
+    geometry = diagnostics["scaled_geometry"]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(
+        gray,
+        (int(geometry["blur_size"]), int(geometry["blur_size"])),
+        max(0.5, float(geometry["scale"])),
+    )
+    opponent = blue_yellow_opponent(image)
+    selected_vote = float(diagnostics["selected_vote_threshold"])
+    alternatives: list[dict[str, float]] = []
+    alternate_trials: list[dict[str, Any]] = []
+    for vote in (selected_vote - 1.0, selected_vote - 2.0):
+        if vote <= 0.0:
+            continue
+        candidates, _rejected, total = _detect_for_vote(gray, opponent, config, geometry, vote)
+        alternatives.extend(candidates)
+        alternate_trials.append(
+            {"vote_threshold": vote, "accepted_markers": int(len(candidates)), "total_circles": int(total)}
+        )
+    repaired, repair = _replace_single_isolated_lattice_marker(accepted, alternatives)
+    repair["alternate_trials"] = alternate_trials
+    diagnostics["lattice_repair"] = repair
+    if repair.get("status") != "repaired":
+        return accepted, rejected, diagnostics
+
+    removed = dict(repair["removed_marker"])
+    removed["rejected_reason"] = "isolated_lattice_outlier"
+    rejected = [*rejected, removed]
+    diagnostics["detector_mode"] = "{}+lattice_outlier_repair".format(diagnostics["detector_mode"])
+    return repaired, rejected, diagnostics
+
+
 def _crop_bounds(points: np.ndarray, shape: tuple[int, int], padding: int) -> tuple[int, int, int, int]:
     height, width = shape
     left = max(0, int(np.floor(np.min(points[:, 0]))) - padding)
@@ -375,11 +520,12 @@ def _draw_overlay(
         )
     for record in accepted:
         centre = (int(round(record["x_px"])), int(round(record["y_px"])))
+        colour = (0, 220, 255) if record.get("accepted_reason") == "lattice_supported_replacement" else (30, 245, 70)
         cv2.circle(
             overlay,
             centre,
             int(round(record["hough_radius_px"])),
-            (30, 245, 70),
+            colour,
             1,
             cv2.LINE_AA,
         )
@@ -420,6 +566,9 @@ def process_frame(
     config = config or HoughChromaticConfig()
     accepted, rejected, diagnostics, active_config = _detect_marker_circles_with_glare_fallback(
         image, config
+    )
+    accepted, rejected, diagnostics = _repair_isolated_lattice_marker(
+        image, accepted, rejected, active_config, diagnostics
     )
     geometry = diagnostics["scaled_geometry"]
     points = np.asarray([[record["x_px"], record["y_px"]] for record in accepted])
