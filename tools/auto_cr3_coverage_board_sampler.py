@@ -874,7 +874,7 @@ def tactile_texture_similarity(reference: ImageFeature, candidate: ImageFeature)
 
 
 def rest_stop_acceptance_from_repeat(repeat_record: dict[str, Any]) -> dict[str, float]:
-    """Set an image-match acceptance band from two stationary crossbar captures."""
+    """Set a robust image-match acceptance band from stationary crossbar captures."""
     marker_motion = dict(repeat_record.get("marker_motion", {}))
     texture = dict(repeat_record.get("texture_similarity", {}))
     if not marker_motion or not texture:
@@ -882,7 +882,12 @@ def rest_stop_acceptance_from_repeat(repeat_record: dict[str, Any]) -> dict[str,
     return {
         "max_marker_motion_mean_px": max(0.25, 3.0 * float(marker_motion["mean"]) + 0.10),
         "max_marker_motion_p95_px": max(0.75, 3.0 * float(marker_motion["p95"]) + 0.25),
-        "min_texture_correlation": max(0.80, min(0.99, float(texture["correlation"]) - 0.05)),
+        # The primary seating checks are the physical Tool(2) TCP and local
+        # marker motion.  The raw texture includes LED/glass reflections that
+        # can drift over minutes even while the seated TacTip is unchanged, so
+        # keep correlation as a secondary gross-mismatch guard rather than
+        # calibrating an unrealistically narrow sub-minute band.
+        "min_texture_correlation": 0.75,
         "max_texture_normalized_mae": max(0.08, 3.0 * float(texture["normalized_mae"]) + 0.04),
     }
 
