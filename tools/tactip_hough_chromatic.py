@@ -342,6 +342,33 @@ def _draw_overlay(
     return overlay
 
 
+def _render_marker_binary(
+    accepted: list[dict[str, float]],
+    image_shape: tuple[int, ...],
+    config: HoughChromaticConfig,
+    geometry: dict[str, Any],
+) -> tuple[np.ndarray, list[float]]:
+    """Draw only the measured marker circles in native camera coordinates."""
+    binary = np.zeros(image_shape[:2], dtype=np.uint8)
+    render_radii: list[float] = []
+    for marker in accepted:
+        radius = max(
+            2.0,
+            marker["hough_radius_px"] * config.render_radius_scale
+            + config.render_radius_offset_px * float(geometry["scale"]),
+        )
+        render_radii.append(radius)
+        cv2.circle(
+            binary,
+            (int(round(marker["x_px"])), int(round(marker["y_px"]))),
+            int(round(radius)),
+            255,
+            -1,
+            cv2.LINE_8,
+        )
+    return binary, render_radii
+
+
 def process_frame(
     image: np.ndarray,
     config: HoughChromaticConfig | None = None,
@@ -350,53 +377,89 @@ def process_frame(
     accepted, rejected, diagnostics, active_config = _detect_marker_circles_with_glare_fallback(
         image, config
     )
-    diagnostics["effective_configuration"] = config_dict(active_config)
     geometry = diagnostics["scaled_geometry"]
-    binary = np.zeros(image.shape[:2], dtype=np.uint8)
-    render_radii: list[float] = []
-    for record in accepted:
-        radius = max(
-            2.0,
-            record["hough_radius_px"] * active_config.render_radius_scale
-            + active_config.render_radius_offset_px * float(geometry["scale"]),
-        )
-        render_radii.append(radius)
-        cv2.circle(
-            binary,
-            (int(round(record["x_px"])), int(round(record["y_px"]))),
-            int(round(radius)),
-            255,
-            -1,
-            cv2.LINE_8,
-        )
     points = np.asarray([[record["x_px"], record["y_px"]] for record in accepted])
     left, top, right, bottom = _crop_bounds(
-        points, binary.shape, int(geometry["roi_padding_px"])
+        points, image.shape[:2], int(geometry["roi_padding_px"])
     )
-    binary_roi = binary[top:bottom, left:right]
-    soft_output = cv2.resize(
+    requested_scale = float(active_config.render_radius_scale)
+    candidate_scales: list[float] = []
+    for scale in (requested_scale, 0.85, 0.80, 0.75, 0.70, 0.65):
+        if scale <= requested_scale and scale not in candidate_scales:
+            candidate_scales.append(scale)
+    render_attempts: list[dict[str, Any]] = []
+    selected: tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        list[float],
+        dict[str, Any],
+        dict[str, Any],
+        HoughChromaticConfig,
+    ] | None = None
+    for scale in candidate_scales:
+        trial_config = replace(active_config, render_radius_scale=scale)
+        binary, render_radii = _render_marker_binary(accepted, image.shape, trial_config, geometry)
+        binary_roi = binary[top:bottom, left:right]
+        soft_output = cv2.resize(
+            binary_roi,
+            (trial_config.output_size, trial_config.output_size),
+            interpolation=cv2.INTER_AREA,
+        )
+        binary_output = np.where(
+            soft_output >= int(trial_config.downsample_threshold), 255, 0
+        ).astype(np.uint8)
+        source_metrics = component_metrics(binary_roi)
+        output_metrics = component_metrics(binary_output)
+        render_attempts.append(
+            {
+                "render_radius_scale": scale,
+                "source_components": source_metrics["components"],
+                "output_components": output_metrics["components"],
+            }
+        )
+        if (
+            source_metrics["components"] == trial_config.expected_markers
+            and output_metrics["components"] == trial_config.expected_markers
+        ):
+            selected = (
+                binary,
+                binary_roi,
+                binary_output,
+                render_radii,
+                source_metrics,
+                output_metrics,
+                trial_config,
+            )
+            break
+    if selected is None:
+        diagnostics.update(
+            {
+                "crop_bounds_xyxy": [left, top, right, bottom],
+                "render_radius_scale_attempts": render_attempts,
+            }
+        )
+        raise MarkerDetectionError(
+            "Marker circles merged or disappeared during binary rendering", diagnostics
+        )
+    (
+        binary,
         binary_roi,
-        (active_config.output_size, active_config.output_size),
-        interpolation=cv2.INTER_AREA,
-    )
-    binary_output = np.where(
-        soft_output >= int(active_config.downsample_threshold), 255, 0
-    ).astype(np.uint8)
-    source_metrics = component_metrics(binary_roi)
-    output_metrics = component_metrics(binary_output)
+        binary_output,
+        render_radii,
+        source_metrics,
+        output_metrics,
+        active_config,
+    ) = selected
     diagnostics.update(
         {
+            "effective_configuration": config_dict(active_config),
             "crop_bounds_xyxy": [left, top, right, bottom],
+            "render_radius_scale_attempts": render_attempts,
             "source_metrics": source_metrics,
             "output_metrics": output_metrics,
         }
     )
-    if source_metrics["components"] != active_config.expected_markers or output_metrics[
-        "components"
-    ] != config.expected_markers:
-        raise MarkerDetectionError(
-            "Marker circles merged or disappeared during binary rendering", diagnostics
-        )
     overlay = _draw_overlay(image, accepted, rejected)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     opponent = blue_yellow_opponent(image)
