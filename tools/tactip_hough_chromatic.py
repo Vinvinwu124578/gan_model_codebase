@@ -252,6 +252,20 @@ def _strong_glare_fallback_configs(
                 canny_high_threshold=95.0,
             ),
         ),
+        (
+            "wide_3_to_8px",
+            replace(
+                config,
+                # Some 640x480 frames enlarge otherwise valid marker rims by
+                # roughly one pixel.  This remains a boundary/radius search;
+                # it does not infer missing locations from a saved layout.
+                hough_vote_threshold=11.0,
+                hough_vote_search_radius=0,
+                minimum_radius_px=6.0,
+                maximum_radius_px=16.0,
+                canny_high_threshold=80.0,
+            ),
+        ),
     ]
     unique: list[tuple[str, HoughChromaticConfig]] = []
     seen: set[HoughChromaticConfig] = set()
