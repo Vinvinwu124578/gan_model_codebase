@@ -26,6 +26,10 @@ tools/
   tactip_runtime_preprocess.py                  # 自动采样在线预处理封装
   ...                                           # CR3、相机、预处理与硬件生成依赖
 
+scripts/
+  run_tile_ne_331pin_first_contact.sh            # 已安装 NE/331-pin 装置的一键 1 mm 首点验证
+  run_tile_ne_331pin_formal2000.sh               # 同一装置的一键 2,000 点正式采集
+
 outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/
   tactile_gan_coverage_board_340mm_tile_*.stl   # 四块打印板
   tactile_gan_coverage_board_340mm_manifest.json
@@ -187,6 +191,39 @@ Tool 参数后，才建议单独执行下面的完整无运动检查：
 
 `--allow-depth-above-csv-limit` 只能在已经物理验证板材、固定方式与 TacTip 能承受
 1-10 mm 协议后使用。
+
+### Fixed NE/331-pin workflow: no manual TCP height entry
+
+当前实验台已保存一份只适用于已安装 `tile_ne`、Tool 2、331-pin TacTip 与抬高横档托座的
+fixture profile：
+
+```text
+outputs/cr3_coverage_board_runs/profiles/tile_ne_331pin_hough_heightcal_v7_20260914.json
+```
+
+它保存了实际的托座 TCP、板子 yaw、横档高度基准和横档接触时的触觉参考图。TacTip 放回托座后，
+不需要手动输入 TCP、高度、yaw 或 board offset。正式采样器会先读取 CR3：
+
+1. 已在保存的托座 TCP：直接做触觉参考图核验。
+2. 仅在横档上方 `0.1--5.0 mm`，且 tile-local 横向误差不超过 `0.25 mm`、姿态误差不超过
+   `0.25 deg`：以 `1%` 速度自动落到横档 TCP，再做触觉参考图核验。
+3. 其它任意位置、横向偏移、姿态偏移、低于横档或高出 5 mm：拒绝动作，不会尝试猜测路径。
+
+一键首点验证（固定 `R07_S05`、零倾角、视觉首接触后压入 `1 mm`）：
+
+```bash
+zsh scripts/run_tile_ne_331pin_first_contact.sh
+```
+
+首点通过后，一键开始 2,000 点批次（1--10 mm、连续板上 transit、批次完成后回到托座）：
+
+```bash
+zsh scripts/run_tile_ne_331pin_formal2000.sh
+```
+
+这两份启动器仍保留每次真实 `MovL` 前的即时 CR3 IK 查询和横档触觉参考图核验；默认不执行耗时的
+全批次 IK 扫描。若要在第一次装夹时额外做全路线扫描，可在启动命令末尾加
+`--preflight-all-routes`。
 
 ## Safety
 

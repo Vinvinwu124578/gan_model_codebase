@@ -12,7 +12,9 @@ mesh points for every board placement:
 2. For a rest-crossbar dock, ``--calibrate-height-from-rest-stop`` records a
    tactile-image reference while the TacTip apex is physically supported by
    the crossbar. Before an execute run, the current dock image must match
-   that reference as well as the saved TCP.
+   that reference as well as the saved TCP. If a manually returned TacTip is
+   already aligned in XY and orientation but remains 0.1--5.0 mm above that
+   crossbar, the sampler lowers it to the saved TCP at 1% speed first.
 3. Leave the dock vertically, travel at the configured safe height directly
    above the target site, and use visual contact only at that target.  The
    former dock reference-pad touch is opt-in via ``--use-reference-pad-check``.
@@ -85,6 +87,11 @@ SUPPORTED_FIXTURE_PROFILE_SCHEMAS = {
 DEFAULT_POST_CONTACT_DEPTH_MIN_MM = 1.0
 DEFAULT_POST_CONTACT_DEPTH_MAX_MM = 10.0
 DEFAULT_FIRST_CONTACT_MAX_EXTRA_BELOW_NOMINAL_MM = 2.0
+DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM = 0.10
+DEFAULT_AUTO_DOCK_RESEAT_MAX_ABOVE_MM = 5.00
+DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM = 0.25
+DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG = 0.25
+DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT = 1.0
 # The visual contact detector can identify first contact up to one 0.5 mm
 # search step after the nominal surface.  Leave 1 mm of headroom above the
 # requested 10 mm capture range for that detection uncertainty.
@@ -386,6 +393,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-contact-p95", type=float, default=0.45)
     parser.add_argument("--dock-position-tolerance-mm", type=float, default=1.5)
     parser.add_argument("--dock-rotation-tolerance-deg", type=float, default=2.0)
+    parser.add_argument(
+        "--disable-auto-dock-reseat",
+        action="store_true",
+        help=(
+            "Require the current Tool TCP to already equal the saved dock datum. By default, "
+            "an XY/orientation-aligned TacTip that is 0.1-5.0 mm above the raised dock crossbar "
+            "is lowered automatically at 1% before the tactile dock-reference check."
+        ),
+    )
     parser.add_argument("--motion-position-tolerance-mm", type=float, default=0.75)
     parser.add_argument("--motion-rotation-tolerance-deg", type=float, default=1.5)
     parser.add_argument("--reference-max-lateral-correction-mm", type=float, default=3.0)
@@ -820,6 +836,57 @@ def fixture_from_profile(profile: dict[str, Any], dock_design: dict[str, Any], a
         dock_rotation=dock_rotation,
         board_yaw_deg=float(profile.get("board_yaw_deg", 0.0)),
     )
+
+
+def dock_alignment_decision(
+    fixture: FixtureTransform,
+    current_pose: Sequence[float],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Classify a stationary TCP before an execute run may leave the dock.
+
+    A physically keyed dock often leaves the arm a few millimetres above its
+    raised crossbar after a manual return.  That is safe to correct only when
+    the TCP is already tightly aligned laterally and rotationally with the
+    saved fixture datum.  The decision intentionally never permits a lateral,
+    rotational, below-dock, or arbitrarily high recovery move.
+    """
+
+    actual = finite_pose(current_pose, "current dock Tool TCP")
+    target = fixture.dock_tcp
+    delta_base = np.asarray(actual[:3], dtype=float) - np.asarray(target[:3], dtype=float)
+    delta_local = fixture.local_vector(delta_base)
+    lateral_error = float(np.linalg.norm(delta_local[:2]))
+    above_dock = float(delta_local[2])
+    position_error = position_error_mm(target, actual)
+    rotation_error = rotation_error_deg(target, actual)
+    aligned_above = (
+        lateral_error <= DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM
+        and DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM <= above_dock <= DEFAULT_AUTO_DOCK_RESEAT_MAX_ABOVE_MM
+        and rotation_error <= DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG
+    )
+    seated = (
+        position_error <= float(args.dock_position_tolerance_mm)
+        and rotation_error <= float(args.dock_rotation_tolerance_deg)
+        and not aligned_above
+    )
+    return {
+        "status": "aligned_above_dock" if aligned_above else "already_seated" if seated else "unsafe_start_pose",
+        "actual_tcp": list_pose(actual),
+        "expected_dock_tcp": list_pose(target),
+        "delta_tile_local_mm": [float(value) for value in delta_local],
+        "lateral_error_mm": lateral_error,
+        "above_dock_mm": above_dock,
+        "position_error_mm": position_error,
+        "rotation_error_deg": rotation_error,
+        "auto_reseat_limits": {
+            "min_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM,
+            "max_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MAX_ABOVE_MM,
+            "max_lateral_error_mm": DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM,
+            "max_rotation_error_deg": DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG,
+            "speed_percent": DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT,
+        },
+    }
 
 
 def read_stable_rest_stop_pose(
@@ -3651,6 +3718,14 @@ def run_collection(
             "reference_pad_check_enabled": not bool(args.skip_reference_pad_check),
             "dock_tactile_reference_check_enabled": not bool(args.skip_dock_tactile_reference_check),
             "continuous_board_transit": bool(args.continuous_board_transit),
+            "auto_dock_reseat": {
+                "enabled": not bool(args.disable_auto_dock_reseat),
+                "min_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM,
+                "max_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MAX_ABOVE_MM,
+                "max_lateral_error_mm": DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM,
+                "max_rotation_error_deg": DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG,
+                "speed_percent": DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT,
+            },
         },
         "reference_check": None,
         "dock_tactile_reference_check": None,
@@ -3684,8 +3759,82 @@ def run_collection(
             "joint_count": len(joints or ()),
             "set_user_tool_replies": replies,
         }
-        if start_position_error > float(args.dock_position_tolerance_mm) or start_rotation_error > float(args.dock_rotation_tolerance_deg):
-            raise RuntimeError("CR3 is not seated at the fixture datum: {:.3f} mm / {:.3f} deg away (limits {:.3f} mm / {:.3f} deg). It will not move from an unknown state.".format(start_position_error, start_rotation_error, float(args.dock_position_tolerance_mm), float(args.dock_rotation_tolerance_deg)))
+        start_dock_alignment = dock_alignment_decision(fixture, current_pose, args)
+        payload["dock_alignment"] = {"initial": start_dock_alignment}
+        if start_dock_alignment["status"] == "aligned_above_dock":
+            if args.disable_auto_dock_reseat:
+                write_json(metadata_path, payload)
+                raise RuntimeError(
+                    "CR3 is {:.3f} mm above the saved raised-crossbar datum with {:.3f} mm lateral / "
+                    "{:.3f} deg rotational error. Automatic low-speed re-seat is disabled; remove "
+                    "--disable-auto-dock-reseat or seat TacTip manually."
+                    .format(
+                        float(start_dock_alignment["above_dock_mm"]),
+                        float(start_dock_alignment["lateral_error_mm"]),
+                        float(start_dock_alignment["rotation_error_deg"]),
+                    )
+                )
+            # The only automatic recovery permitted here is a short, purely
+            # vertical return to the keyed raised crossbar.  The alignment
+            # classifier above has already rejected lateral, rotational,
+            # below-dock, and high-above-dock states.
+            reseat_args = argparse.Namespace(**vars(args))
+            reseat_args.speed = min(float(args.speed), DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT)
+            payload["dock_alignment"]["status"] = "auto_reseat_started"
+            write_json(metadata_path, payload)
+            reseat_motion = move_and_verify(
+                robot,
+                "auto reseat raised dock crossbar",
+                fixture.dock_tcp,
+                reseat_args,
+            )
+            joints, current_pose, raw_joints, raw_pose = robot.read_state()
+            post_reseat_position_error = position_error_mm(fixture.dock_tcp, current_pose)
+            post_reseat_rotation_error = rotation_error_deg(fixture.dock_tcp, current_pose)
+            post_reseat_alignment = dock_alignment_decision(fixture, current_pose, args)
+            payload["dock_alignment"].update(
+                {
+                    "status": "auto_reseated",
+                    "motion": reseat_motion,
+                    "post_reseat": post_reseat_alignment,
+                }
+            )
+            payload["post_reseat_state"] = {
+                "actual_tcp": list_pose(current_pose),
+                "expected_dock_tcp": list_pose(fixture.dock_tcp),
+                "position_error_mm": post_reseat_position_error,
+                "rotation_error_deg": post_reseat_rotation_error,
+                "raw_get_angle": raw_joints,
+                "raw_get_pose": raw_pose,
+                "joint_count": len(joints or ()),
+            }
+            write_json(metadata_path, payload)
+            if (
+                post_reseat_position_error > float(args.dock_position_tolerance_mm)
+                or post_reseat_rotation_error > float(args.dock_rotation_tolerance_deg)
+            ):
+                raise RuntimeError(
+                    "Automatic dock re-seat did not reach the saved datum: {:.3f} mm / {:.3f} deg "
+                    "away (limits {:.3f} mm / {:.3f} deg). No board-site motion was sent."
+                    .format(
+                        post_reseat_position_error,
+                        post_reseat_rotation_error,
+                        float(args.dock_position_tolerance_mm),
+                        float(args.dock_rotation_tolerance_deg),
+                    )
+                )
+        elif start_dock_alignment["status"] != "already_seated":
+            write_json(metadata_path, payload)
+            raise RuntimeError(
+                "CR3 is not seated at the fixture datum and cannot be safely auto-reseated: "
+                "{:.3f} mm position / {:.3f} deg rotation error, tile-local delta "
+                "{:+.3f} / {:+.3f} / {:+.3f} mm. It will not move from an unknown state."
+                .format(
+                    start_position_error,
+                    start_rotation_error,
+                    *[float(value) for value in start_dock_alignment["delta_tile_local_mm"]],
+                )
+            )
         if "rest_pose_stop" in dock_design:
             fixture_profile = read_json(args.fixture_profile)
             dock_tactile_check = verify_rest_stop_tactile_reference(
@@ -4164,14 +4313,24 @@ def run(args: argparse.Namespace) -> int:
         "reference_pad_check_enabled": not bool(args.skip_reference_pad_check),
         "dock_tactile_reference_check_enabled": not bool(args.skip_dock_tactile_reference_check),
         "continuous_board_transit": bool(args.continuous_board_transit),
+        "auto_dock_reseat": {
+            "enabled": not bool(args.disable_auto_dock_reseat),
+            "min_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM,
+            "max_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MAX_ABOVE_MM,
+            "max_lateral_error_mm": DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM,
+            "max_rotation_error_deg": DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG,
+            "speed_percent": DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT,
+        },
         "samples": [asdict(sample) for sample in samples],
         "notes": [
             "Tile-local X/Y/Z are exact coordinates from the generated board manifest and dock geometry.",
             "Exact-count plans use the selected spatial layout and recompute analytical surface height for every planned XY point. The default region_grid uses the footprint-safe central region, not repeated micro-jitter around nine seeds.",
             "A base-frame CR3 pose is emitted only after a valid seated fixture profile is supplied.",
             (
-                "For a raised-crossbar dock, an execute run first verifies both the saved Tool TCP and a "
-                "current tactile image against the saved crossbar-contact reference; no movement is sent on a mismatch."
+                "For a raised-crossbar dock, an execute run automatically lowers only an XY/orientation-aligned "
+                "TacTip that is 0.1-5.0 mm above the saved crossbar at 1% speed, then verifies both the saved "
+                "Tool TCP and a current tactile image against the saved crossbar-contact reference; no board-site "
+                "movement is sent on a mismatch."
             ),
             (
                 "The real run skips the dock reference-pad touch and uses the saved dock frame directly."

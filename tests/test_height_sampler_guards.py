@@ -32,7 +32,14 @@ SAMPLER = TOOLS / "auto_cr3_coverage_board_sampler.py"
 
 def guard_namespace():
     tree = ast.parse(SAMPLER.read_text(encoding="utf-8"))
-    names = {"parse_args", "board_surface_correction_mm", "make_route", "load_dock_design", "rest_stop_contract"}
+    names = {
+        "parse_args",
+        "board_surface_correction_mm",
+        "make_route",
+        "load_dock_design",
+        "rest_stop_contract",
+        "dock_alignment_decision",
+    }
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
                  and all(isinstance(target, ast.Name) and target.id.isupper() for target in node.targets)]
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
@@ -40,8 +47,26 @@ def guard_namespace():
     functions.extend(node for node in shared.body if isinstance(node, ast.FunctionDef) and node.name == "finite_pose")
     def add_preprocess_args(parser):
         parser.add_argument("--no-tactip-preprocess", action="store_true")
-    namespace = {"argparse": argparse, "Path": Path, "math": math, "np": np,
-                 "__doc__": "Isolated sampler guard tests", "add_tactip_preprocess_args": add_preprocess_args}
+    def list_pose(pose):
+        return [float(value) for value in pose]
+
+    def position_error_mm(expected, actual):
+        return float(np.linalg.norm(np.asarray(expected[:3], dtype=float) - np.asarray(actual[:3], dtype=float)))
+
+    def rotation_error_deg(expected, actual):
+        return float(np.linalg.norm(np.asarray(expected[3:], dtype=float) - np.asarray(actual[3:], dtype=float)))
+
+    namespace = {
+        "argparse": argparse,
+        "Path": Path,
+        "math": math,
+        "np": np,
+        "__doc__": "Isolated sampler guard tests",
+        "add_tactip_preprocess_args": add_preprocess_args,
+        "list_pose": list_pose,
+        "position_error_mm": position_error_mm,
+        "rotation_error_deg": rotation_error_deg,
+    }
     future = ast.parse("from __future__ import annotations").body[0]
     module = ast.Module(body=[future, *constants, *functions], type_ignores=[])
     exec(compile(ast.fix_missing_locations(module), "<isolated sampler guards>", "exec"), namespace)
@@ -79,6 +104,7 @@ class HeightCliGuardsTests(unittest.TestCase):
     def test_full_route_preflight_is_opt_in_for_execute_runs(self):
         default_args = self.parse([])
         self.assertFalse(default_args.preflight_all_routes)
+        self.assertFalse(default_args.disable_auto_dock_reseat)
         explicit_args = self.parse(["--execute", "--yes-i-confirm-cr3-is-safe", "--preflight-all-routes"])
         self.assertTrue(explicit_args.preflight_all_routes)
 
@@ -177,6 +203,37 @@ class LocalFixture:
 
     def press_axis(self, tilt_x, tilt_y):
         return np.array([0.0, 0.0, -1.0])
+
+    def local_vector(self, base_vector_mm):
+        return np.asarray(base_vector_mm, dtype=float)
+
+
+class DockAutoReseatDecisionTests(unittest.TestCase):
+    def setUp(self):
+        self.namespace = guard_namespace()
+        self.fixture = LocalFixture()
+        self.args = SimpleNamespace(
+            dock_position_tolerance_mm=1.5,
+            dock_rotation_tolerance_deg=2.0,
+        )
+
+    def decision(self, pose):
+        return self.namespace["dock_alignment_decision"](self.fixture, pose, self.args)
+
+    def test_aligned_tactip_above_crossbar_is_safe_for_low_speed_reseat(self):
+        decision = self.decision((0.0, -139.0, 15.2085, 180.0, 0.0, 0.0))
+        self.assertEqual(decision["status"], "aligned_above_dock")
+        self.assertAlmostEqual(decision["above_dock_mm"], 3.2085)
+        self.assertAlmostEqual(decision["lateral_error_mm"], 0.0)
+
+    def test_lateral_offset_above_crossbar_is_never_auto_reseated(self):
+        decision = self.decision((0.30, -139.0, 15.2085, 180.0, 0.0, 0.0))
+        self.assertEqual(decision["status"], "unsafe_start_pose")
+        self.assertGreater(decision["lateral_error_mm"], 0.25)
+
+    def test_saved_dock_datum_is_already_seated(self):
+        decision = self.decision(self.fixture.dock_tcp)
+        self.assertEqual(decision["status"], "already_seated")
 
 
 class CalibratedRouteGuardsTests(unittest.TestCase):
