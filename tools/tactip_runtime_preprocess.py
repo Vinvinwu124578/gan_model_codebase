@@ -150,7 +150,8 @@ class TacTipRuntimePreprocessor:
             "description": (
                 "Hough circular-boundary detection followed by median 2B-G-R glare rejection. "
                 "Raw captures remain unchanged; accepted outputs contain only values 0 and 255. "
-                "Native contact_binary/gray/model_roi outputs are provided for visual-contact flow."
+                "Native grayscale frames and fixed-coordinate Hough contact masks are provided "
+                "for visual-contact flow and rest-stop texture verification."
             ),
         }
         (self.output_dir / "preprocess_metadata.json").write_text(
@@ -169,9 +170,12 @@ class TacTipRuntimePreprocessor:
             with self._lock:
                 record, images, _markers = process_frame(frame, self.config)
                 contact_binary = images["contact_binary"]
+                native_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 outputs = {
                     "contact_binary": contact_binary,
-                    "gray": contact_binary,
+                    # Keep intensity for optical flow and texture checks.  The matching
+                    # model_roi stays binary and fixes the marker-safe support region.
+                    "gray": native_gray,
                     "model_roi": contact_binary,
                     "model_input": images["model_input_256"],
                     "raw_roi": images["raw_roi"],
