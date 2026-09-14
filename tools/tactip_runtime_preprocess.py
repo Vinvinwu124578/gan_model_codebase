@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Shared online Hough/chromatic preprocessing for TacTip samplers.
 
-Raw captures remain untouched.  Each accepted frame gets a strict 0/255
-marker image in ``tactip_preprocessed/model_input_256``.  Detection failures
-are recorded and warned about without converting a preprocessing problem into
-an uncontrolled robot-motion failure.
+Raw captures remain untouched. Each accepted frame gets a strict 0/255 marker
+image in ``tactip_preprocessed/model_input_256``. A native-resolution marker
+map is also written for the visual-contact optical-flow detector, whose
+coordinates must not change when the model crop moves between frames.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from tactip_hough_chromatic import (
 )
 
 
-PROFILE_NAME = "tactip_hough_chromatic_331_v1"
+PROFILE_NAME = "tactip_hough_chromatic_331_v2"
 
 
 def add_tactip_preprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -110,6 +110,13 @@ class TacTipRuntimePreprocessor:
         self._closed = False
         self._records: dict[str, dict[str, Any]] = {}
         for name in (
+            "contact_binary",
+            # Compatibility outputs consumed by auto_cr3_visual_contact_search.
+            # They deliberately use the native-resolution marker map instead of
+            # the variable Hough crop, so LK optical flow stays in camera pixels.
+            "gray",
+            "model_roi",
+            "model_input",
             "raw_roi",
             "gray_roi",
             "blue_yellow_score_roi",
@@ -142,7 +149,8 @@ class TacTipRuntimePreprocessor:
             "configuration": config_dict(self.config),
             "description": (
                 "Hough circular-boundary detection followed by median 2B-G-R glare rejection. "
-                "Raw captures remain unchanged; accepted outputs contain only values 0 and 255."
+                "Raw captures remain unchanged; accepted outputs contain only values 0 and 255. "
+                "Native contact_binary/gray/model_roi outputs are provided for visual-contact flow."
             ),
         }
         (self.output_dir / "preprocess_metadata.json").write_text(
@@ -160,7 +168,12 @@ class TacTipRuntimePreprocessor:
         try:
             with self._lock:
                 record, images, _markers = process_frame(frame, self.config)
+                contact_binary = images["contact_binary"]
                 outputs = {
+                    "contact_binary": contact_binary,
+                    "gray": contact_binary,
+                    "model_roi": contact_binary,
+                    "model_input": images["model_input_256"],
                     "raw_roi": images["raw_roi"],
                     "gray_roi": images["gray_roi"],
                     "blue_yellow_score_roi": images["blue_yellow_score_roi"],
@@ -178,6 +191,10 @@ class TacTipRuntimePreprocessor:
                         "name": name,
                         "raw_image": os.path.relpath(raw_image, self.output_dir),
                         "frame_size_px": [int(frame.shape[1]), int(frame.shape[0])],
+                        "contact_binary": "contact_binary/{}".format(name),
+                        "motion_gray": "gray/{}".format(name),
+                        "model_roi": "model_roi/{}".format(name),
+                        "model_input": "model_input/{}".format(name),
                         "model_input_256": "model_input_256/{}".format(name),
                     }
                 )

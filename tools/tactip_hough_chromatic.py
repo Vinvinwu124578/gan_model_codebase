@@ -319,6 +319,10 @@ def process_frame(
         "diagnostics": diagnostics,
     }
     images = {
+        # Native camera coordinates stay fixed between frames.  The runtime
+        # contact detector consumes this map for optical flow, while the
+        # cropped images below remain the model-facing outputs.
+        "contact_binary": binary,
         "raw_roi": image[top:bottom, left:right],
         "gray_roi": gray[top:bottom, left:right],
         "blue_yellow_score_roi": opponent_u8[top:bottom, left:right],
