@@ -378,6 +378,10 @@ def median_capture(
     return np.median(np.stack(frames, axis=0), axis=0).astype(np.uint8), timestamp, float(np.median(p95_values))
 
 
+class TacTipPreprocessRejected(RuntimeError):
+    """A fresh camera capture did not pass the strict marker detector."""
+
+
 def write_frame(
     output_dir: Path,
     label: str,
@@ -390,7 +394,7 @@ def write_frame(
         raise RuntimeError("Could not write {}".format(raw_path))
     processed = preprocessor.process_and_save(frame, raw_path)
     if processed is None:
-        raise RuntimeError("TacTip preprocessing failed for {}".format(raw_path))
+        raise TacTipPreprocessRejected("TacTip preprocessing rejected {}".format(raw_path))
     preprocess_dir = output_dir / "tactip_preprocessed"
     gray_path = preprocess_dir / "gray" / raw_path.name
     roi_path = preprocess_dir / "model_roi" / raw_path.name
@@ -554,8 +558,36 @@ def capture_record(
     newer_than: float,
     baseline: ImageFeature | None = None,
 ) -> tuple[dict[str, Any], ImageFeature, float]:
-    frame, timestamp, gray_p95 = median_capture(camera, args, frames, newer_than)
-    raw_path, gray_path, roi_path = write_frame(output_dir, label, frame, preprocessor)
+    """Capture one validated record, retrying fresh frames after Hough rejection.
+
+    A 331-pin TacTip may occasionally produce a single blurred or glare-heavy
+    camera frame even while the sensor and CR3 are completely stationary.  The
+    marker detector remains strict: each candidate still needs all 331 circles
+    from its own Hough/chromatic measurement.  Retrying here only discards a
+    rejected fresh image; it never restores markers from a previous image or
+    commands robot motion.
+    """
+    retry_count = max(0, int(getattr(args, "capture_retry_count", 0)))
+    retry_sec = max(0.0, float(getattr(args, "capture_retry_sec", 0.0)))
+    timestamp = float(newer_than)
+    rejection_messages: list[str] = []
+    for attempt in range(1, retry_count + 2):
+        frame, timestamp, gray_p95 = median_capture(camera, args, frames, timestamp)
+        try:
+            raw_path, gray_path, roi_path = write_frame(output_dir, label, frame, preprocessor)
+            break
+        except TacTipPreprocessRejected as exc:
+            rejection_messages.append(str(exc))
+            if attempt > retry_count:
+                raise RuntimeError(
+                    "TacTip preprocessing rejected {} fresh capture(s) for {}. "
+                    "The CR3 has not moved; inspect the saved raw diagnostic frame(s).".format(
+                        attempt, label
+                    )
+                ) from exc
+            time.sleep(retry_sec)
+    else:
+        raise AssertionError("TacTip capture retry loop did not select a frame")
     feature = load_feature(gray_path, roi_path)
     record: dict[str, Any] = {
         "label": label,
@@ -566,6 +598,8 @@ def capture_record(
         "camera_time": float(timestamp),
         "capture_gray_p95": float(gray_p95),
         "marker_safe_pixels": int(np.count_nonzero(feature.marker_support)),
+        "preprocess_attempts": int(attempt),
+        "preprocess_rejections_before_accept": rejection_messages,
     }
     if baseline is not None:
         stats, diff_image = diff_stats(baseline, feature)
