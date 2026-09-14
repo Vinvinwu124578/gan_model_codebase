@@ -13,6 +13,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "tools" / "auto_cr3_coverage_boar
 NAMES = {
     "check_ik_target", "check_ik_sequence", "preflight_sample_route",
     "select_ik_reachable_samples", "route_ik_targets", "reindex_samples",
+    "skip_full_route_preflight",
 }
 tree = ast.parse(SOURCE.read_text(encoding="utf-8-sig"), filename=str(SOURCE))
 selected = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
@@ -155,6 +156,23 @@ class IKPreflightTests(unittest.TestCase):
             first_checks = report["candidates"][0]["checks"]
             self.assertNotEqual(first_checks[0]["joint_near_deg"], first_checks[4]["joint_near_deg"])
             self.assertEqual(first_checks[4]["ik_source"], "controller")
+
+    def test_default_run_skips_expensive_full_route_scan(self):
+        requested = [Sample(9, "requested_a", route_offset=1), Sample(12, "requested_b", route_offset=2)]
+        candidates = [*requested, Sample(13, "replacement", route_offset=3)]
+        selected, report = ns["skip_full_route_preflight"](
+            requested,
+            candidates,
+            settings(),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual([sample.sample_id for sample in selected], ["requested_a", "requested_b"])
+        self.assertEqual([sample.index for sample in selected], [1, 2])
+        self.assertEqual(report["status"], "skipped_by_default")
+        self.assertEqual(report["checked_candidate_count"], 0)
+        self.assertEqual(report["performance"]["controller_ik_call_count"], 0)
+        self.assertEqual(report["candidate_pool_count"], 3)
+        self.assertIn("Every actual MovL", report["note"])
 
 
 if __name__ == "__main__":

@@ -76,6 +76,18 @@ class HeightCliGuardsTests(unittest.TestCase):
     def test_execute_cannot_bypass_confirmation(self):
         self.rejects(self.measurement + ["--execute"])
 
+    def test_full_route_preflight_is_opt_in_for_execute_runs(self):
+        default_args = self.parse([])
+        self.assertFalse(default_args.preflight_all_routes)
+        explicit_args = self.parse(["--execute", "--yes-i-confirm-cr3-is-safe", "--preflight-all-routes"])
+        self.assertTrue(explicit_args.preflight_all_routes)
+
+    def test_full_route_preflight_requires_motion_mode_and_immediate_ik(self):
+        self.rejects(["--preflight-all-routes"])
+        self.rejects([
+            "--execute", "--yes-i-confirm-cr3-is-safe", "--preflight-all-routes", "--disable-ik-preflight",
+        ])
+
     def test_measurement_requires_exactly_one_repeatable_site(self):
         for extra in (["--height-measurement"],
                       ["--height-measurement", "--first-contact-test", "--max-samples", "1"],

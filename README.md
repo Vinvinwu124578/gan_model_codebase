@@ -138,9 +138,11 @@ JSON，并重新示教 fixture profile；不能复用旧托座的 TCP。
 
 输出包括 CSV、JSON 和可旋转 HTML 规划预览，不连接相机，也不移动机械臂。
 
-### 3. Controller IK preflight without motion
+### 3. Optional controller IK preflight without motion
 
-机械臂已上电且 TacTip 仍在示教托座位置时：
+正常采样默认跳过这一步，避免对 2,000 个采样点逐一请求控制器 IK 而等待数分钟。
+实际每个 `MovL` 仍会在发送前进行一次即时 IK 检查。只有在首次更换夹具、工作空间或
+Tool 参数后，才建议单独执行下面的完整无运动检查：
 
 ```bash
 .venv/bin/python tools/auto_cr3_v4_150mm_coverage_board_sampler.py \
@@ -161,7 +163,9 @@ JSON，并重新示教 fixture profile；不能复用旧托座的 TCP。
 ### 4. Real collection
 
 先只使用 `--max-samples 1 --first-contact-test` 做有人看护的 1 mm 首次接触测试。
-确认坐标、方向、接触检测和回程都正确后，才运行完整批次：
+确认坐标、方向、接触检测和回程都正确后，直接运行完整批次；不需要先执行步骤 3。
+若希望在正式采样前再次做完整路线筛选，可在执行命令中显式加入
+`--preflight-all-routes`。
 
 ```bash
 .venv/bin/python tools/auto_cr3_v4_150mm_coverage_board_sampler.py \

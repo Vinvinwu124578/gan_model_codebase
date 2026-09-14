@@ -17,7 +17,10 @@ mesh points for every board placement:
    above the target site, and use visual contact only at that target.  The
    former dock reference-pad touch is opt-in via ``--use-reference-pad-check``.
 4. Collect varying seed locations, post-contact depths, and tilt angles with
-   fresh tactile baselines and two-frame visual-contact confirmation.  With
+   fresh tactile baselines and two-frame visual-contact confirmation.  Every
+   actual ``MovL`` receives a fresh controller IK query immediately before it
+   is sent.  The slower whole-batch IK route filter is opt-in through
+   ``--preflight-all-routes`` (or ``--ik-preflight-only``).  With
    ``--continuous-board-transit``, the dock is checked once and consecutive
    sites are joined at the common collision-clear height instead of returning
    to the dock after every sample.
@@ -192,10 +195,10 @@ def parse_args() -> argparse.Namespace:
         "--samples-per-tile",
         type=int,
         help=(
-            "Exact dense dataset size after optional --region/--site filters and "
-            "controller IK filtering. For the four-region tile, "
-            "--samples-per-tile 2000 retains 500 safe, jittered, IK-reachable "
-            "contacts per region."
+            "Exact dense dataset size after optional --region/--site filters. "
+            "With --preflight-all-routes, unreachable candidates are replaced "
+            "from the reserve pool. For the four-region tile, "
+            "--samples-per-tile 2000 plans 500 safe, jittered contacts per region."
         ),
     )
     parser.add_argument("--region", action="append", dest="regions", help="Optional region filter, e.g. --region R03. Repeatable.")
@@ -393,6 +396,15 @@ def parse_args() -> argparse.Namespace:
         help="Disable the controller-side no-motion inverse-kinematics check before every MovL.",
     )
     parser.add_argument(
+        "--preflight-all-routes",
+        action="store_true",
+        help=(
+            "Before an execute run, ask the CR3 controller to validate every candidate route "
+            "and replace unreachable dense samples. Off by default because it can take many "
+            "minutes for a 2000-sample run; each actual MovL still has its own immediate IK check."
+        ),
+    )
+    parser.add_argument(
         "--disable-ik-cache",
         action="store_true",
         help=(
@@ -416,8 +428,9 @@ def parse_args() -> argparse.Namespace:
         default=2.0,
         help=(
             "For an exact dense run, prepare this many deterministic candidate "
-            "sites before controller IK filtering. The sampler retains the requested "
-            "count of reachable routes and uses later candidates as replacements."
+            "sites for --preflight-all-routes or --ik-preflight-only. The sampler "
+            "retains the requested count of reachable routes and uses later candidates "
+            "as replacements."
         ),
     )
     reference_group = parser.add_mutually_exclusive_group()
@@ -527,7 +540,7 @@ def parse_args() -> argparse.Namespace:
         parser.error("--dock-design does not exist: {}".format(args.dock_design))
     calibration_only = bool(args.teach_dock_from_current or args.calibrate_height_from_rest_stop)
     if args.fixture_local_preview and (
-        args.execute or args.ik_preflight_only or calibration_only or args.reseat_dock_only
+        args.execute or args.ik_preflight_only or args.preflight_all_routes or calibration_only or args.reseat_dock_only
         or args.recover_reference_to_dock or args.verify_dock_tactile_reference_only or args.capture_camera_only
         or args.height_calibration or args.skip_previews
     ):
@@ -547,6 +560,7 @@ def parse_args() -> argparse.Namespace:
     if calibration_only and (
         args.execute
         or args.ik_preflight_only
+        or args.preflight_all_routes
         or args.reseat_dock_only
         or args.recover_reference_to_dock
         or args.verify_dock_tactile_reference_only
@@ -557,6 +571,10 @@ def parse_args() -> argparse.Namespace:
         args.execute or args.reseat_dock_only or args.recover_reference_to_dock or args.verify_dock_tactile_reference_only
     ):
         parser.error("--ik-preflight-only cannot be combined with a motion mode")
+    if args.preflight_all_routes and not args.execute:
+        parser.error("--preflight-all-routes requires --execute; use --ik-preflight-only for a no-motion full-route report")
+    if args.preflight_all_routes and args.disable_ik_preflight:
+        parser.error("--preflight-all-routes cannot be combined with --disable-ik-preflight")
     if args.reseat_dock_only and not args.execute:
         parser.error("--reseat-dock-only requires --execute and --yes-i-confirm-cr3-is-safe")
     if args.recover_reference_to_dock and not args.execute:
@@ -570,6 +588,7 @@ def parse_args() -> argparse.Namespace:
     if args.capture_camera_only and (
         args.execute
         or args.ik_preflight_only
+        or args.preflight_all_routes
         or args.reseat_dock_only
         or args.recover_reference_to_dock
         or args.verify_dock_tactile_reference_only
@@ -2862,10 +2881,12 @@ targeted local repeats.
 - In continuous-board mode, the seated TCP and tactile rest reference are
   checked once. Each sample then retracts to site-high and travels directly to
   the next site-high; it does not revisit the dock between samples.
-- Before the first board-site motion, an execute run asks the controller to
-  solve site-high, approach, nominal contact, maximum possible capture, and
-  retreat poses. Dense runs replace rejected candidates from a bounded,
-  deterministic safe-site pool and save `ik_route_filter.json`.
+- Every actual `MovL` asks the controller for a fresh inverse-kinematics
+  solution immediately before motion. The slower whole-batch route scan
+  (site-high, approach, nominal contact, maximum possible capture, and
+  retreat) is off by default; add `--preflight-all-routes` when an
+  IK-filtered replacement plan is specifically needed. Either mode saves an
+  `ik_route_filter.json` record.
 - On a missing contact it returns by the high route and stops by default.
 
 ## Current run
@@ -3236,6 +3257,66 @@ def select_ik_reachable_samples(
     )
     update_progress(len(selected), final=True)
     return selected, report
+
+
+def skip_full_route_preflight(
+    requested_samples: Sequence[BoardSample],
+    candidate_samples: Sequence[BoardSample] | None,
+    args: argparse.Namespace,
+    correction_base_mm: Sequence[float],
+) -> tuple[list[BoardSample], dict[str, Any]]:
+    """Keep the requested plan when the expensive batch IK filter is not requested.
+
+    Normal execute runs deliberately do not make thousands of controller
+    ``InverseSolution`` calls before starting collection.  This does *not*
+    bypass the immediate fresh IK query in ``move_and_verify`` before each
+    actual ``MovL`` command.
+    """
+
+    started = time.perf_counter()
+    selected = reindex_samples(requested_samples)
+    requested_by_region = Counter(sample.region_id for sample in requested_samples)
+    selected_by_region = Counter(sample.region_id for sample in selected)
+    candidate_pool_count = len(candidate_samples) if candidate_samples is not None else len(requested_samples)
+    return selected, {
+        "schema": "cr3_coverage_board_route_ik_filter.v1",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "tile_id": args.tile,
+        "tool": int(args.tool),
+        "user": int(args.user),
+        "requested_count": len(requested_samples),
+        "requested_by_region": dict(sorted(requested_by_region.items())),
+        "candidate_pool_count": candidate_pool_count,
+        "correction_base_mm": [float(value) for value in correction_base_mm],
+        "status": "skipped_by_default",
+        "selected_count": len(selected),
+        "selected_by_region": dict(sorted(selected_by_region.items())),
+        "selected_sample_ids": [sample.sample_id for sample in selected],
+        "checked_candidate_count": 0,
+        "rejected_count": 0,
+        "rejected_by_region": {},
+        "rejected_by_failure_label": {},
+        "near_joint_branch_failure_count": 0,
+        "no_ik_solution_count": 0,
+        "unclassified_near_hint_failure_count": 0,
+        "shared_transit_checks": [],
+        "candidates": [],
+        "exact_query_cache_enabled": None,
+        "failure_diagnostics_enabled": False,
+        "performance": {
+            "elapsed_sec": time.perf_counter() - started,
+            "target_check_count": 0,
+            "controller_ik_call_count": 0,
+            "diagnostic_ik_call_count": 0,
+            "cache_hit_count": 0,
+            "cache_entry_count": 0,
+        },
+        "note": (
+            "Full-route controller IK preflight was skipped by default. Every actual MovL "
+            "will still call InverseSolution immediately before motion. Use "
+            "--preflight-all-routes to run the slower batch filter."
+        ),
+    }
 
 
 def run_ik_preflight(
@@ -3695,7 +3776,7 @@ def run_collection(
             or filter_rotation_error > float(args.motion_rotation_tolerance_deg)
         ):
             raise RuntimeError(
-                "CR3 is not at the verified dock-exit pose before route IK filtering: "
+                "CR3 is not at the verified dock-exit pose before the board route starts: "
                 "{:.3f} mm / {:.3f} deg (limits {:.3f} / {:.3f})."
                 .format(
                     filter_position_error,
@@ -3703,17 +3784,25 @@ def run_collection(
                     float(args.motion_position_tolerance_mm),
                     float(args.motion_rotation_tolerance_deg),
                 )
-            )
-        route_filter_path = output_dir / "ik_route_filter.json"
-        selected_samples, ik_filter = select_ik_reachable_samples(
-            robot,
-            samples,
-            list(candidate_samples) if candidate_samples is not None else samples,
-            fixture,
-            args,
-            correction,
-            filter_joints,
         )
+        route_filter_path = output_dir / "ik_route_filter.json"
+        if args.preflight_all_routes:
+            selected_samples, ik_filter = select_ik_reachable_samples(
+                robot,
+                samples,
+                list(candidate_samples) if candidate_samples is not None else samples,
+                fixture,
+                args,
+                correction,
+                filter_joints,
+            )
+        else:
+            selected_samples, ik_filter = skip_full_route_preflight(
+                samples,
+                candidate_samples,
+                args,
+                correction,
+            )
         ik_filter["preflight_start_state"] = {
             "actual_tcp": list_pose(filter_pose),
             "expected_dock_exit_tcp": list_pose(dock_exit),
@@ -3742,7 +3831,7 @@ def run_collection(
         )
         write_plan_csv(filtered_plan_csv, selected_samples, fixture, args, correction)
         write_json(metadata_path, payload)
-        if ik_filter.get("status") not in {"complete", "disabled_by_flag"}:
+        if ik_filter.get("status") not in {"complete", "disabled_by_flag", "skipped_by_default"}:
             raise RuntimeError(
                 "Route IK filtering found only {} reachable candidates for {} requested samples. "
                 "No board-site MovL was sent. Inspect {} and increase "
@@ -3752,11 +3841,18 @@ def run_collection(
         samples = selected_samples
         adjusted_csv = output_dir / "runtime_adjusted_sampling_plan.csv"
         write_plan_csv(adjusted_csv, samples, fixture, args, correction)
-        print(
-            "IK route filter accepted {} / {} requested samples after checking {} candidates. Report: {}"
-            .format(len(samples), int(ik_filter["requested_count"]), int(ik_filter.get("checked_candidate_count", 0)), route_filter_path),
-            flush=True,
-        )
+        if ik_filter.get("status") == "skipped_by_default":
+            print(
+                "Full-route IK preflight skipped; using {} planned samples. Each actual MovL will receive "
+                "an immediate controller IK check. Report: {}".format(len(samples), route_filter_path),
+                flush=True,
+            )
+        else:
+            print(
+                "IK route filter accepted {} / {} requested samples after checking {} candidates. Report: {}"
+                .format(len(samples), int(ik_filter["requested_count"]), int(ik_filter.get("checked_candidate_count", 0)), route_filter_path),
+                flush=True,
+            )
         stopped_after_no_contact = False
         last_route: dict[str, Any] | None = None
         for sample_number, sample in enumerate(samples):
@@ -3991,10 +4087,17 @@ def run(args: argparse.Namespace) -> int:
         if any(sample.stimulus != "flat_reference" for sample in samples):
             raise ValueError("Height measurement requires a known flat_reference site; curved/edge features do not identify board height")
         samples = [replace(sample, post_contact_depth_mm=0.0, tilt_x_deg=0.0, tilt_y_deg=0.0) for sample in samples]
-    ik_candidate_samples = build_ik_candidate_pool(manifest, tile, filtered_rows, args, samples)
     if args.zero_tilt:
         samples = [replace(sample, tilt_x_deg=0.0, tilt_y_deg=0.0) for sample in samples]
-        ik_candidate_samples = [replace(sample, tilt_x_deg=0.0, tilt_y_deg=0.0) for sample in ik_candidate_samples]
+    full_route_preflight_requested = bool(args.preflight_all_routes or args.ik_preflight_only)
+    if full_route_preflight_requested:
+        ik_candidate_samples = build_ik_candidate_pool(manifest, tile, filtered_rows, args, samples)
+        if args.zero_tilt:
+            ik_candidate_samples = [replace(sample, tilt_x_deg=0.0, tilt_y_deg=0.0) for sample in ik_candidate_samples]
+    else:
+        # Normal execute runs do not need a replacement pool because they do
+        # not perform the slow whole-route controller IK scan.
+        ik_candidate_samples = list(samples)
     sample_depth_summary = depth_distribution_summary(samples, args)
     candidate_depth_summary = depth_distribution_summary(ik_candidate_samples, args)
     sample_spatial_summary = spatial_coverage_summary(samples)
@@ -4055,6 +4158,7 @@ def run(args: argparse.Namespace) -> int:
         "planned_spatial_coverage": sample_spatial_summary,
         "ik_candidate_spatial_coverage": candidate_spatial_summary,
         "csv_depth_limit_summary": csv_depth_summary,
+        "full_route_ik_preflight_requested": full_route_preflight_requested,
         "ik_candidate_pool_count": len(ik_candidate_samples),
         "ik_candidate_multiplier": float(args.ik_candidate_multiplier),
         "reference_pad_check_enabled": not bool(args.skip_reference_pad_check),
@@ -4074,7 +4178,13 @@ def run(args: argparse.Namespace) -> int:
                 if args.skip_reference_pad_check
                 else "The real run performs its visual reference-pad check and records any accepted translation correction."
             ),
-            "An execute run uses controller IK to filter site-high, approach, contact, maximum-capture, and retreat poses after the reference correction. Dense runs select replacements from the deterministic candidate pool.",
+            (
+                "Each actual MovL runs a fresh controller IK query immediately before motion. "
+                "The slower full-route candidate filter is enabled for this run."
+                if full_route_preflight_requested
+                else "Each actual MovL runs a fresh controller IK query immediately before motion. "
+                "The slower full-route candidate filter is skipped by default for this run."
+            ),
             (
                 "The post-contact depth protocol is distributed inside each source seed's CSV-safe intersection "
                 "with the requested range after visual first contact."
@@ -4098,17 +4208,18 @@ def run(args: argparse.Namespace) -> int:
     ik_preview_path: Path | None = None
     motion_preview_path: Path | None = None
     if fixture is not None and not args.skip_previews:
-        ik_preview_path = output_dir / "ik_candidate_pool_preview.html"
-        write_ik_candidate_preview(
-            ik_preview_path,
-            tile,
-            args.board_dir,
-            dock_design,
-            fixture,
-            args,
-            samples,
-            ik_candidate_samples,
-        )
+        if full_route_preflight_requested:
+            ik_preview_path = output_dir / "ik_candidate_pool_preview.html"
+            write_ik_candidate_preview(
+                ik_preview_path,
+                tile,
+                args.board_dir,
+                dock_design,
+                fixture,
+                args,
+                samples,
+                ik_candidate_samples,
+            )
         motion_preview_path = output_dir / "full_tcp_motion_safety_preview.html"
         write_motion_route_preview(
             motion_preview_path,
