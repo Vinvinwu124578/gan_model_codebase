@@ -266,6 +266,21 @@ def _strong_glare_fallback_configs(
                 canny_high_threshold=80.0,
             ),
         ),
+        (
+            "relaxed_chroma_15",
+            replace(
+                config,
+                # Run only after every strict chromatic configuration failed.
+                # A glass reflection can desaturate a genuine blue marker, so
+                # retain its Hough boundary when its opponent score is still
+                # modestly positive.  Exact count and geometry are unchanged.
+                hough_vote_threshold=10.0,
+                minimum_radius_px=6.0,
+                maximum_radius_px=12.0,
+                canny_high_threshold=80.0,
+                minimum_blue_yellow_score=15.0,
+            ),
+        ),
     ]
     unique: list[tuple[str, HoughChromaticConfig]] = []
     seen: set[HoughChromaticConfig] = set()
