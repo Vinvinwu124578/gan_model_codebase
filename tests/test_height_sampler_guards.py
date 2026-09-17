@@ -34,11 +34,14 @@ def guard_namespace():
     tree = ast.parse(SAMPLER.read_text(encoding="utf-8"))
     names = {
         "parse_args",
+        "base_to_tile_local",
+        "base_to_fixed_fixture_local",
         "board_surface_correction_mm",
         "make_route",
         "load_dock_design",
         "rest_stop_contract",
         "dock_alignment_decision",
+        "low_pose_recovery_route",
     }
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
                  and all(isinstance(target, ast.Name) and target.id.isupper() for target in node.targets)]
@@ -105,6 +108,9 @@ class HeightCliGuardsTests(unittest.TestCase):
         default_args = self.parse([])
         self.assertFalse(default_args.preflight_all_routes)
         self.assertFalse(default_args.disable_auto_dock_reseat)
+        self.assertTrue(default_args.return_to_dock)
+        stay_high_args = self.parse(["--leave-at-site-high"])
+        self.assertFalse(stay_high_args.return_to_dock)
         explicit_args = self.parse(["--execute", "--yes-i-confirm-cr3-is-safe", "--preflight-all-routes"])
         self.assertTrue(explicit_args.preflight_all_routes)
 
@@ -124,19 +130,40 @@ class HeightCliGuardsTests(unittest.TestCase):
                 self.rejects(extra)
 
     def test_measurement_rejects_existing_height_correction(self):
-        for extra in (["--height-calibration", "unused.json"], ["--board-height-offset-mm", "0.2"], ["--use-reference-pad-check"]):
+        for extra in (["--height-calibration", "unused.json"], ["--runtime-height-datum", "unused.json"], ["--board-height-offset-mm", "0.2"], ["--use-reference-pad-check"]):
             with self.subTest(extra=extra):
                 self.rejects(self.measurement + extra)
 
+    def test_runtime_height_calibration_owns_the_fixed_multi_contact_protocol(self):
+        args = self.parse(["--calibrate-runtime-height", "--execute", "--yes-i-confirm-cr3-is-safe"])
+        self.assertTrue(args.height_measurement)
+        self.assertTrue(args.zero_tilt)
+        self.assertTrue(args.continuous_board_transit)
+        self.assertTrue(args.return_to_dock)
+        self.assertEqual(args.max_extra_below_planned_contact_mm, 4.0)
+        self.assertEqual(args.contact_search_margin_mm, 4.0)
+        self.assertIsNotNone(args.runtime_height_datum)
+
+    def test_runtime_height_calibration_rejects_manual_plan_selection_and_unsafe_bypass(self):
+        for extra in (
+            ["--calibrate-runtime-height", "--site", "R01_S05", "--execute", "--yes-i-confirm-cr3-is-safe"],
+            ["--calibrate-runtime-height", "--skip-dock-tactile-reference-check", "--execute", "--yes-i-confirm-cr3-is-safe"],
+            ["--calibrate-runtime-height"],
+        ):
+            with self.subTest(extra=extra):
+                self.rejects(extra)
+
     def test_measurement_rejects_other_operating_modes(self):
         for flag in ("--teach-dock-from-current", "--calibrate-height-from-rest-stop", "--capture-camera-only",
-                     "--fixture-local-preview", "--reseat-dock-only", "--recover-reference-to-dock", "--verify-dock-tactile-reference-only"):
+                     "--fixture-local-preview", "--reseat-dock-only", "--recover-reference-to-dock",
+                     "--recover-low-pose-to-dock", "--verify-dock-tactile-reference-only"):
             with self.subTest(flag=flag):
                 self.rejects(self.measurement + [flag])
 
     def test_geometry_preview_rejects_every_hardware_entry(self):
         for flag in ("--execute", "--ik-preflight-only", "--teach-dock-from-current", "--calibrate-height-from-rest-stop",
-                     "--capture-camera-only", "--verify-dock-tactile-reference-only", "--reseat-dock-only", "--recover-reference-to-dock"):
+                     "--capture-camera-only", "--verify-dock-tactile-reference-only", "--reseat-dock-only",
+                     "--recover-reference-to-dock", "--recover-low-pose-to-dock"):
             with self.subTest(flag=flag):
                 self.rejects(["--fixture-local-preview", flag, "--yes-i-confirm-cr3-is-safe"])
 
@@ -226,14 +253,64 @@ class DockAutoReseatDecisionTests(unittest.TestCase):
         self.assertAlmostEqual(decision["above_dock_mm"], 3.2085)
         self.assertAlmostEqual(decision["lateral_error_mm"], 0.0)
 
-    def test_lateral_offset_above_crossbar_is_never_auto_reseated(self):
+    def test_small_repeatable_lateral_offset_above_crossbar_is_auto_reseated(self):
         decision = self.decision((0.30, -139.0, 15.2085, 180.0, 0.0, 0.0))
+        self.assertEqual(decision["status"], "aligned_above_dock")
+        self.assertLessEqual(decision["lateral_error_mm"], 0.50)
+
+    def test_large_lateral_offset_above_crossbar_is_never_auto_reseated(self):
+        decision = self.decision((0.51, -139.0, 15.2085, 180.0, 0.0, 0.0))
         self.assertEqual(decision["status"], "unsafe_start_pose")
-        self.assertGreater(decision["lateral_error_mm"], 0.25)
+        self.assertGreater(decision["lateral_error_mm"], 0.50)
+
+    def test_current_fixture_repeatability_envelope_is_auto_reseated(self):
+        decision = self.decision((0.285, -139.0, 13.823, 180.382, 0.0, 0.0))
+        self.assertEqual(decision["status"], "aligned_above_dock")
 
     def test_saved_dock_datum_is_already_seated(self):
         decision = self.decision(self.fixture.dock_tcp)
         self.assertEqual(decision["status"], "already_seated")
+
+
+class LowPoseRecoveryRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.namespace = guard_namespace()
+        self.fixture = LocalFixture()
+        self.args = SimpleNamespace(
+            safe_height_mm=100.0,
+            dock_exit_lift_mm=80.0,
+            motion_position_tolerance_mm=0.75,
+        )
+
+    def route(self, current_pose=(40.0, -80.0, 15.0, 180.0, 0.0, 0.0)):
+        return self.namespace["low_pose_recovery_route"](
+            self.fixture,
+            current_pose,
+            self.args,
+        )
+
+    def test_recovery_lifts_without_lateral_motion_before_returning_to_dock(self):
+        plan, route = self.route()
+        labels = [label for label, _pose in route]
+        self.assertEqual(
+            labels,
+            ["vertical_retract_to_safe_height", "dock_high", "dock_exit", "reseat_dock"],
+        )
+        first_target = route[0][1]
+        self.assertEqual(first_target[:2], (40.0, -80.0))
+        self.assertEqual(first_target[2], 100.0)
+        self.assertEqual(route[-1][1], self.fixture.dock_tcp)
+        self.assertEqual(plan["route"][0]["target_tile_local_mm"], [40.0, -80.0, 100.0])
+
+    def test_recovery_refuses_unknown_or_misoriented_start_pose(self):
+        unsafe_poses = (
+            (0.0, -139.0, -0.01, 180.0, 0.0, 0.0),
+            (200.0, -139.0, 15.0, 180.0, 0.0, 0.0),
+            (0.0, -139.0, 15.0, 180.0, 0.0, 2.01),
+        )
+        for pose in unsafe_poses:
+            with self.subTest(pose=pose), self.assertRaises(RuntimeError):
+                self.route(pose)
 
 
 class CalibratedRouteGuardsTests(unittest.TestCase):
@@ -271,6 +348,14 @@ class CalibratedRouteGuardsTests(unittest.TestCase):
         result = self.route()
         self.assertEqual(result["contact_tcp"][2], 7.0)
         self.assertEqual(result["site_high_tcp"][2], 100.0)
+
+    def test_runtime_global_datum_applies_to_tilted_routes_without_plane_extrapolation(self):
+        self.args._height_calibration = None
+        self.args._runtime_height_datum = {"offset_tile_z_mm": -1.25}
+        self.sample.tilt_x_deg = 3.0
+        result = self.route()
+        self.assertAlmostEqual(result["contact_tcp"][2], 8.75)
+        self.assertAlmostEqual(result["runtime_height_correction_mm"], -1.25)
 
     def test_zero_tilt_calibration_cannot_authorize_tilted_route(self):
         self.sample.tilt_x_deg = 0.5

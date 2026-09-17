@@ -28,6 +28,7 @@ tools/
 
 scripts/
   run_tile_ne_331pin_first_contact.sh            # 已安装 NE/331-pin 装置的一键 1 mm 首点验证
+  calibrate_tile_ne_331pin_runtime_height.sh     # 兼容入口：刷新键控横档基准，不用特征重标高度
   run_tile_ne_331pin_formal2000.sh               # 同一装置的一键 2,000 点正式采集
 
 outputs/tactile_gan_coverage_board_v4_highprotrusion_deepcontact_70mm_mountpitch150/
@@ -201,8 +202,9 @@ fixture profile：
 outputs/cr3_coverage_board_runs/profiles/tile_ne_331pin_hough_heightcal_v7_20260914.json
 ```
 
-它保存了实际的托座 TCP、板子 yaw、横档高度基准和横档接触时的触觉参考图。TacTip 放回托座后，
-不需要手动输入 TCP、高度、yaw 或 board offset。正式采样器会先读取 CR3：
+它保存了实际的托座 TCP、固定的机械装夹坐标轴、横档高度基准、横档接触时的触觉参考图，以及一次性测得的
+`board_yaw_deg`（板 CAD 局部轴到这套固定托座的平面注册）。TacTip 放回托座后，不需要手动输入 TCP、高度或 board offset；
+正式采样绝不会重新估计或叠加这个 yaw，横档参考刷新也会保留已保存的值。正式采样器会先读取 CR3：
 
 1. 已在保存的托座 TCP：直接做触觉参考图核验。
 2. 仅在横档上方 `0.1--5.0 mm`，且 tile-local 横向误差不超过 `0.25 mm`、姿态误差不超过
@@ -219,6 +221,31 @@ zsh scripts/run_tile_ne_331pin_first_contact.sh
 
 ```bash
 zsh scripts/run_tile_ne_331pin_formal2000.sh
+```
+
+正常结束或视觉接触失败后，采样器默认执行同一套固定回托：先在当前采样点沿夹具局部
+`+Z` 抬升到 `100 mm` 安全高度，再移动到 `dock_high`、下降到 `dock_exit`，最后落到
+fixture profile 中保存的 Tool 2 托座 TCP。`--return-to-dock` 已是默认行为；只有显式传入
+`--leave-at-site-high` 才会停在采样点高位。
+
+如果程序在低位被中断，可使用独立回托启动器。第一条命令只读取当前 TCP 并完成四段控制器
+IK 预检，不发送运动；检查报告后，第二条命令才执行回托：
+
+```bash
+zsh scripts/recover_tile_ne_331pin_to_dock.sh
+zsh scripts/recover_tile_ne_331pin_to_dock.sh --execute --yes-i-confirm-cr3-is-safe
+```
+
+低位回托只接受与固定夹具姿态一致、位于托座 `160 mm` 范围内且不低于板局部零面的已知
+位置。它不会从未知姿态猜测路线，也不会在普通异常处理器中盲目移动机械臂。
+
+`tile_ne` 没有宽阔平面参考区，不能也不会把边缘或曲面首接触混成“全局板高”。
+它的固定高度只来自 TacTip 归位时实际压在横档上的 Tool(2) TCP；板和托座由共享 M6 孔定位，
+该关系不会在采样中重新拟合。每个正式样本仍会依据当下的视觉 marker 形变找到**本地点**的首次接触，
+然后才按计划压入深度。重新装板、换 TacTip 或想刷新横档图片/TCP 时，运行：
+
+```bash
+zsh scripts/calibrate_tile_ne_331pin_runtime_height.sh
 ```
 
 这两份启动器仍保留每次真实 `MovL` 前的即时 CR3 IK 查询和横档触觉参考图核验；默认不执行耗时的

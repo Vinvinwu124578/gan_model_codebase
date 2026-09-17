@@ -17,7 +17,11 @@ SOURCE = Path(__file__).resolve().parents[1] / "tools" / "auto_cr3_coverage_boar
 tree = ast.parse(SOURCE.read_text(encoding="utf-8-sig"), filename=str(SOURCE))
 selected = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
 selected.extend(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                and node.name in {"load_preview_mesh_arrays", "_cached_preview_mesh_arrays"})
+                and node.name in {
+                    "load_preview_mesh_arrays",
+                    "_cached_preview_mesh_arrays",
+                    "preview_height_intensity",
+                })
 ns = {"Path": Path, "np": np, "lru_cache": lru_cache}
 exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(SOURCE), "exec"), ns)
 
@@ -62,7 +66,9 @@ class PreviewCacheTests(unittest.TestCase):
         self.assertIs(a, c)
         self.assertEqual(self.loader.call_count, 1)
         vertices, faces = a
-        self.assertEqual(faces.shape, (4, 3))
+        # A simplifier failure must preserve the complete connected mesh.
+        # Randomly selecting four faces would recreate the old foggy preview.
+        self.assertEqual(faces.shape, (10, 3))
         self.assertTrue(np.all(faces >= 0))
         self.assertTrue(np.all(faces < len(vertices)))
         for array in a:
@@ -93,6 +99,25 @@ class PreviewCacheTests(unittest.TestCase):
             path.write_bytes(b"mock")
             ns["load_preview_mesh_arrays"](path, 4)
         self.assertEqual(ns["_cached_preview_mesh_arrays"].cache_info().currsize, 4)
+
+    def test_preview_height_intensity_is_robust_and_bounded(self):
+        vertices = np.column_stack(
+            (
+                np.zeros(101),
+                np.zeros(101),
+                np.concatenate((np.arange(100, dtype=float), np.asarray((10000.0,)))),
+            )
+        )
+        intensity = ns["preview_height_intensity"](vertices)
+        self.assertEqual(intensity.shape, (101,))
+        self.assertTrue(np.all(intensity >= 0.0))
+        self.assertTrue(np.all(intensity <= 1.0))
+        self.assertEqual(float(intensity[-1]), 1.0)
+        self.assertGreater(float(intensity[75]), float(intensity[25]))
+
+    def test_preview_height_intensity_handles_flat_mesh(self):
+        vertices = np.asarray(((0.0, 0.0, 4.0), (1.0, 1.0, 4.0)))
+        np.testing.assert_allclose(ns["preview_height_intensity"](vertices), 0.5)
 
 
 if __name__ == "__main__":

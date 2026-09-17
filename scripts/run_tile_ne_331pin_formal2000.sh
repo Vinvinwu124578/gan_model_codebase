@@ -1,7 +1,14 @@
 #!/bin/zsh
 # Fixed, hardware-specific 2,000-sample launcher for the installed NE board.
-# The sampler automatically re-seats a TacTip that is only 0.1-5.0 mm above
-# the keyed dock crossbar, then validates the saved tactile crossbar image.
+# Start with TacTip physically seated on the raised dock crossbar. Before every
+# formal run, the sampler automatically lowers a safely aligned TacTip onto
+# the saved fixed crossbar TCP at 1% speed, then records a fresh two-frame
+# tactile reference. The prior run's reference image is deliberately ignored
+# so a replaced/rotated TacTip head cannot reject a valid new run. This step
+# never rewrites the TCP, crossbar height, or board coordinate frame.
+# To use a different physical board mounting direction for only this run,
+# append e.g. `--board-yaw-offset-deg 90` after the script name. First inspect
+# the matching no-motion HTML route from preview_tile_ne_331pin_board_yaw.sh.
 
 set -euo pipefail
 
@@ -29,7 +36,10 @@ exec "$PYTHON" "$ROOT/tools/auto_cr3_coverage_board_sampler.py" \
   --tool 2 \
   --user 0 \
   --speed 5 \
+  --refresh-dock-reference-at-start \
   --continuous-board-transit \
+  --continue-on-no-contact \
+  --continue-on-safe-sample-error \
   --return-to-dock \
   --skip-previews \
   --execute \

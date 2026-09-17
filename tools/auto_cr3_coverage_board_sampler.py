@@ -65,6 +65,12 @@ from auto_cr3_visual_contact_search import (
 )
 from design_tactile_gan_coverage_board_modular import surface_height_for_profile
 from live_cr3_gelsight_sampler import DobotCR3LiveClient, parse_camera_source
+from runtime_board_height_datum import (
+    DEFAULT_REPEATS_PER_SITE as RUNTIME_HEIGHT_REPEATS_PER_SITE,
+    build_runtime_height_datum,
+    load_runtime_height_datum,
+    make_bindings as make_runtime_height_bindings,
+)
 from tactip_runtime_preprocess import add_tactip_preprocess_args, create_tactip_preprocessor
 
 
@@ -87,11 +93,31 @@ SUPPORTED_FIXTURE_PROFILE_SCHEMAS = {
 DEFAULT_POST_CONTACT_DEPTH_MIN_MM = 1.0
 DEFAULT_POST_CONTACT_DEPTH_MAX_MM = 10.0
 DEFAULT_FIRST_CONTACT_MAX_EXTRA_BELOW_NOMINAL_MM = 2.0
+# A keyed board can be a few millimetres below its CAD datum after real
+# assembly.  Runtime calibration is zero-indentation, so it may safely search
+# farther than a normal capture in order to measure that installation offset.
+DEFAULT_RUNTIME_HEIGHT_CONTACT_MARGIN_MM = 4.0
 DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM = 0.10
 DEFAULT_AUTO_DOCK_RESEAT_MAX_ABOVE_MM = 5.00
-DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM = 0.25
-DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG = 0.25
+# The keyed cradle constrains the TacTip body. Let the saved-datum startup
+# correction absorb normal encoder/reseat repeatability, but keep it far below
+# the cradle clearance so an unknown lateral pose is never pulled into it.
+DEFAULT_AUTO_DOCK_RESEAT_LATERAL_TOLERANCE_MM = 0.50
+DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG = 0.75
 DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT = 1.0
+# A fresh camera/head orientation needs a fresh dock *image* reference, but
+# it must never redefine the physical crossbar height or fixture TCP.
+DEFAULT_STARTUP_REFERENCE_MAX_MARKER_MEAN_PX = 0.50
+DEFAULT_STARTUP_REFERENCE_MAX_MARKER_P95_PX = 1.50
+DEFAULT_STARTUP_REFERENCE_MIN_TEXTURE_CORRELATION = 0.60
+DEFAULT_STARTUP_REFERENCE_MAX_TEXTURE_NORMALIZED_MAE = 0.20
+# A low-pose recovery is deliberately opt-in. It is for a stopped collection
+# whose Tool TCP is still aligned with the keyed fixture, but is below the
+# normal transit plane. The first move is strictly fixture-local +Z, then all
+# lateral travel happens at the usual shared safe height.
+DEFAULT_LOW_RECOVERY_MAX_DISTANCE_FROM_DOCK_MM = 160.0
+DEFAULT_LOW_RECOVERY_MIN_LOCAL_Z_MM = 0.0
+DEFAULT_LOW_RECOVERY_MAX_ORIENTATION_ERROR_DEG = 2.0
 # The visual contact detector can identify first contact up to one 0.5 mm
 # search step after the nominal surface.  Leave 1 mm of headroom above the
 # requested 10 mm capture range for that detection uncertainty.
@@ -107,10 +133,37 @@ class FixtureTransform:
     tile_to_base: np.ndarray
     dock_rotation: np.ndarray
     board_yaw_deg: float
+    fixed_tile_to_base: np.ndarray | None = None
+    board_pivot_local_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    runtime_yaw_offset_deg: float = 0.0
+
+    def fixed_rotation(self) -> np.ndarray:
+        """Return the saved board/dock frame before any runtime re-keying."""
+
+        if self.fixed_tile_to_base is not None:
+            return np.asarray(self.fixed_tile_to_base, dtype=float)
+        undo_runtime_yaw = Rotation.from_euler(
+            "Z", -float(self.runtime_yaw_offset_deg), degrees=True
+        ).as_matrix()
+        return np.asarray(self.tile_to_base, dtype=float) @ undo_runtime_yaw
+
+    def board_pivot_base(self) -> np.ndarray:
+        """Physical board centre, fixed while the square tile is re-keyed."""
+
+        pivot = np.asarray(self.board_pivot_local_mm, dtype=float)
+        dock_local = np.asarray(self.dock_tcp_local_mm, dtype=float)
+        return np.asarray(self.dock_tcp[:3], dtype=float) + self.fixed_rotation() @ (pivot - dock_local)
 
     def position(self, local_xyz_mm: Sequence[float]) -> np.ndarray:
+        pivot = np.asarray(self.board_pivot_local_mm, dtype=float)
+        delta = np.asarray(local_xyz_mm, dtype=float) - pivot
+        return self.board_pivot_base() + self.tile_to_base @ delta
+
+    def dock_position(self, local_xyz_mm: Sequence[float]) -> np.ndarray:
+        """Map fixed dock geometry without applying the runtime board rotation."""
+
         delta = np.asarray(local_xyz_mm, dtype=float) - np.asarray(self.dock_tcp_local_mm, dtype=float)
-        return np.asarray(self.dock_tcp[:3], dtype=float) + self.tile_to_base @ delta
+        return np.asarray(self.dock_tcp[:3], dtype=float) + self.fixed_rotation() @ delta
 
     def orientation(self, tilt_x_deg: float, tilt_y_deg: float) -> np.ndarray:
         axis_x = self.tile_to_base[:, 0]
@@ -121,7 +174,28 @@ class FixtureTransform:
 
     def pose(self, local_xyz_mm: Sequence[float], tilt_x_deg: float = 0.0, tilt_y_deg: float = 0.0) -> tuple[float, float, float, float, float, float]:
         position = self.position(local_xyz_mm)
-        raw_angles = Rotation.from_matrix(self.orientation(tilt_x_deg, tilt_y_deg)).as_euler("XYZ", degrees=True)
+        return self._pose_from_position_rotation(
+            position,
+            self.orientation(tilt_x_deg, tilt_y_deg),
+            "generated fixture pose",
+        )
+
+    def dock_pose(self, local_xyz_mm: Sequence[float]) -> tuple[float, float, float, float, float, float]:
+        """Pose above the stationary calibration dock/reference pad."""
+
+        return self._pose_from_position_rotation(
+            self.dock_position(local_xyz_mm),
+            self.dock_rotation,
+            "generated fixed-dock pose",
+        )
+
+    def _pose_from_position_rotation(
+        self,
+        position: Sequence[float],
+        orientation: np.ndarray,
+        label: str,
+    ) -> tuple[float, float, float, float, float, float]:
+        raw_angles = Rotation.from_matrix(orientation).as_euler("XYZ", degrees=True)
         # Keep the numerical Euler representation near the seated datum.  For
         # example, +178 degrees and -182 degrees encode the same orientation,
         # but the latter is the small physical change from a -179 degree
@@ -131,7 +205,7 @@ class FixtureTransform:
             [angle + 360.0 * round((ref - angle) / 360.0) for angle, ref in zip(raw_angles, reference)],
             dtype=float,
         )
-        return finite_pose(tuple(position.tolist()) + tuple(angles.tolist()), "generated fixture pose")
+        return finite_pose(tuple(np.asarray(position, dtype=float).tolist()) + tuple(angles.tolist()), label)
 
     def press_axis(self, tilt_x_deg: float, tilt_y_deg: float) -> np.ndarray:
         axis = self.orientation(tilt_x_deg, tilt_y_deg) @ np.asarray((0.0, 0.0, 1.0), dtype=float)
@@ -139,6 +213,9 @@ class FixtureTransform:
 
     def local_vector(self, base_vector_mm: Sequence[float]) -> np.ndarray:
         return self.tile_to_base.T @ np.asarray(base_vector_mm, dtype=float)
+
+    def fixture_local_vector(self, base_vector_mm: Sequence[float]) -> np.ndarray:
+        return self.fixed_rotation().T @ np.asarray(base_vector_mm, dtype=float)
 
 
 @dataclass(frozen=True)
@@ -184,6 +261,27 @@ def parse_args() -> argparse.Namespace:
             "and a repeated tactile-image reference of that crossbar contact."
         ),
     )
+    calibration_mode.add_argument(
+        "--calibrate-runtime-height",
+        action="store_true",
+        help=(
+            "Automatically measure four broad flat-reference sites three times at visual first contact, "
+            "then save a board-height datum. This moves CR3 and requires --execute."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-dock-reference-at-start",
+        "--refresh-dock-datum-at-start",
+        dest="refresh_dock_reference_at_start",
+        action="store_true",
+        help=(
+            "For an execute collection that starts with TacTip physically seated on the raised crossbar, "
+            "automatically re-seat a TCP that is safely 0.1-5.0 mm above that fixed crossbar, then discard "
+            "the previous tactile image reference and capture a fresh two-frame reference. The saved fixed "
+            "crossbar TCP, height datum, and planar board registration are never changed. "
+            "--refresh-dock-datum-at-start is retained as a compatibility alias."
+        ),
+    )
     parser.add_argument(
         "--rest-stop-stability-tolerance-mm",
         type=float,
@@ -197,6 +295,15 @@ def parse_args() -> argparse.Namespace:
         help="Maximum rotation change between two no-motion rest-stop readings. Default: 0.30 deg.",
     )
     parser.add_argument("--output-dir", type=Path, help="Collection/planning directory. A timestamped tile directory is used by default.")
+    parser.add_argument(
+        "--resume-from-run",
+        type=Path,
+        help=(
+            "Continue the exact unattempted suffix of a previous run that stopped after no contact. "
+            "The source plan, attempted sample prefix, board, dock and fixture hashes must all match. "
+            "A new output directory is created; the source run is never modified."
+        ),
+    )
     parser.add_argument("--profile", choices=("quick", "standard", "dense"), default="standard")
     parser.add_argument(
         "--samples-per-tile",
@@ -269,7 +376,33 @@ def parse_args() -> argparse.Namespace:
         "--height-calibration", type=Path,
         help="Validated multi-point height calibration JSON bound to this fixture, dock and board. No manual offset or reference-pad correction may be combined with it.",
     )
-    parser.add_argument("--board-yaw-deg", type=float, default=0.0, help="One-time fine yaw correction from the keyed dock frame. Keep 0 for the printed fixture orientation.")
+    parser.add_argument(
+        "--runtime-height-datum", type=Path,
+        help=(
+            "Accepted global tile-local board-height datum created by --calibrate-runtime-height. "
+            "It shifts planned board heights but preserves visual first-contact correction at every site."
+        ),
+    )
+    parser.add_argument(
+        "--board-yaw-deg",
+        type=float,
+        default=0.0,
+        help=(
+            "One-time fixed planar registration written into a fixture profile when teaching or refreshing its "
+            "rest-stop datum. Normal collection uses the saved profile value and never re-estimates it."
+        ),
+    )
+    parser.add_argument(
+        "--board-yaw-offset-deg",
+        type=float,
+        default=0.0,
+        help=(
+            "Signed runtime rotation added to the fixture profile's saved board yaw. It rotates every "
+            "planned board contact and tilt axis about the tile's geometric centre, but never rewrites the dock "
+            "TCP, crossbar height, or fixture profile. Positive values rotate tile-local +X toward +Y "
+            "around tile-local +Z (right-hand rule). Use a non-execute preview before changing hardware motion."
+        ),
+    )
     parser.add_argument("--robot-ip", default="192.168.31.88")
     parser.add_argument("--dashboard-port", type=int, default=29999)
     parser.add_argument("--move-port", type=int, default=30003)
@@ -399,7 +532,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Require the current Tool TCP to already equal the saved dock datum. By default, "
             "an XY/orientation-aligned TacTip that is 0.1-5.0 mm above the raised dock crossbar "
-            "is lowered automatically at 1% before the tactile dock-reference check."
+            "is lowered automatically at 1%% before the tactile dock-reference check."
         ),
     )
     parser.add_argument("--motion-position-tolerance-mm", type=float, default=0.75)
@@ -473,6 +606,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--continue-on-no-contact", action="store_true", help="Return high and continue after a site with no stable visual contact. Default stops safely.")
     parser.add_argument(
+        "--continue-on-safe-sample-error",
+        action="store_true",
+        help=(
+            "Record and skip a single sample only after a controller-side IK rejection that sent no MovL, "
+            "or after a camera/preprocessing failure followed by a verified high-route recovery. "
+            "Motion-feedback, RobotMode, and pose-verification failures always stop the run."
+        ),
+    )
+    parser.add_argument(
         "--continuous-board-transit",
         action="store_true",
         help=(
@@ -481,7 +623,26 @@ def parse_args() -> argparse.Namespace:
             "next contact. Without this flag, every sample returns through dock-high to dock-exit."
         ),
     )
-    parser.add_argument("--return-to-dock", action="store_true", help="After a completed batch, re-seat TacTip in the dock at the verified starting TCP.")
+    finish_policy = parser.add_mutually_exclusive_group()
+    finish_policy.add_argument(
+        "--return-to-dock",
+        dest="return_to_dock",
+        action="store_true",
+        default=True,
+        help=(
+            "Re-seat TacTip in the saved dock automatically after the batch. This is the default; "
+            "the keyed rest pose is fixed for this fixture."
+        ),
+    )
+    finish_policy.add_argument(
+        "--leave-at-site-high",
+        dest="return_to_dock",
+        action="store_false",
+        help=(
+            "Do not return to the dock after the batch. Leave TacTip at the last verified site-high pose; "
+            "diagnostic use only."
+        ),
+    )
     parser.add_argument(
         "--ik-preflight-only",
         action="store_true",
@@ -510,6 +671,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--recover-low-pose-to-dock",
+        action="store_true",
+        help=(
+            "Read a stopped low Tool(2) pose, preflight a vertical fixture-local lift followed by the "
+            "saved dock-high/dock-exit/seated route, and optionally execute it. Without --execute this "
+            "writes the live recovery plan and controller IK report without moving CR3."
+        ),
+    )
+    parser.add_argument(
         "--verify-dock-tactile-reference-only",
         action="store_true",
         help=(
@@ -530,18 +700,65 @@ def parse_args() -> argparse.Namespace:
     add_tactip_preprocess_args(parser)
     args = parser.parse_args()
     args._height_calibration = None
+    args._runtime_height_datum = None
+    args._resume_info = None
+    args._startup_dock_reference_refresh = None
+    requested_height_measurement = bool(args.height_measurement)
+    if args.calibrate_runtime_height:
+        if requested_height_measurement or args.first_contact_test:
+            parser.error("--calibrate-runtime-height owns its fixed no-indentation first-contact protocol; omit --height-measurement and --first-contact-test")
+        if args.sites or args.regions or args.max_samples is not None or args.samples_per_tile is not None:
+            parser.error("--calibrate-runtime-height automatically selects the central known site from each installed region; omit --site/--region/--max-samples/--samples-per-tile")
+        if args.height_calibration or float(args.board_height_offset_mm) != 0.0 or not args.skip_reference_pad_check:
+            parser.error("--calibrate-runtime-height requires an uncorrected board with the reference-pad check disabled")
+        if args.ik_preflight_only or args.preflight_all_routes or args.fixture_local_preview or args.capture_camera_only:
+            parser.error("--calibrate-runtime-height cannot be combined with preview, camera-only, or IK-only modes")
+        if (args.reseat_dock_only or args.recover_reference_to_dock or args.recover_low_pose_to_dock
+                or args.verify_dock_tactile_reference_only):
+            parser.error("--calibrate-runtime-height cannot be combined with another dock mode")
+        if args.skip_dock_tactile_reference_check:
+            parser.error("--calibrate-runtime-height requires the tactile rest-crossbar check; omit --skip-dock-tactile-reference-check")
+        if args.continue_on_no_contact or args.continue_on_safe_sample_error:
+            parser.error(
+                "--calibrate-runtime-height stops on any failed calibration contact; omit "
+                "--continue-on-no-contact and --continue-on-safe-sample-error"
+            )
+        args.height_measurement = True
+        args.zero_tilt = True
+        args.continuous_board_transit = True
+        args.return_to_dock = True
+        args.save_search_frames = True
+        args.consecutive_hits = max(int(args.consecutive_hits), 3)
+        args.motion_position_tolerance_mm = min(float(args.motion_position_tolerance_mm), 0.1)
+        args.motion_rotation_tolerance_deg = min(float(args.motion_rotation_tolerance_deg), 0.2)
     if args.height_measurement:
         args.motion_position_tolerance_mm = min(float(args.motion_position_tolerance_mm), 0.1)
         args.motion_rotation_tolerance_deg = min(float(args.motion_rotation_tolerance_deg), 0.2)
         args.consecutive_hits = max(int(args.consecutive_hits), 3)
         args.save_search_frames = True
     if args.max_extra_below_planned_contact_mm is None:
-        requested_depth = float(args.min_post_contact_depth_mm) if args.first_contact_test else float(args.max_post_contact_depth_mm)
+        requested_depth = (
+            0.0 if args.calibrate_runtime_height
+            else float(args.min_post_contact_depth_mm) if args.first_contact_test
+            else float(args.max_post_contact_depth_mm)
+        )
         args.max_extra_below_planned_contact_mm = (
             max(
                 DEFAULT_FIRST_CONTACT_MAX_EXTRA_BELOW_NOMINAL_MM if args.first_contact_test else DEFAULT_MAX_EXTRA_BELOW_PLANNED_CONTACT_MM,
                 requested_depth + float(args.contact_search_margin_mm),
             )
+        )
+    if args.calibrate_runtime_height:
+        # Runtime calibration has zero post-contact indentation.  It may scan
+        # to 4 mm below the CAD surface to find a real keyed-board mounting
+        # offset, but stops immediately on visual first contact.
+        args.contact_search_margin_mm = max(
+            float(args.contact_search_margin_mm),
+            DEFAULT_RUNTIME_HEIGHT_CONTACT_MARGIN_MM,
+        )
+        args.max_extra_below_planned_contact_mm = max(
+            DEFAULT_FIRST_CONTACT_MAX_EXTRA_BELOW_NOMINAL_MM,
+            float(args.contact_search_margin_mm),
         )
     args.board_dir = args.board_dir.expanduser().resolve()
     args.dock_design = args.dock_design.expanduser().resolve()
@@ -550,28 +767,41 @@ def parse_args() -> argparse.Namespace:
     args.fixture_profile = args.fixture_profile.expanduser().resolve()
     if args.output_dir is not None:
         args.output_dir = args.output_dir.expanduser().resolve()
+    if args.resume_from_run is not None:
+        args.resume_from_run = args.resume_from_run.expanduser().resolve()
+    if args.runtime_height_datum is not None:
+        args.runtime_height_datum = args.runtime_height_datum.expanduser().resolve()
+    elif args.calibrate_runtime_height:
+        args.runtime_height_datum = (DEFAULT_RUN_ROOT / "profiles" / "{}_runtime_height_datum.json".format(args.tile)).resolve()
     if not args.board_dir.is_dir():
         parser.error("--board-dir does not exist: {}".format(args.board_dir))
     if not args.dock_design.is_file():
         parser.error("--dock-design does not exist: {}".format(args.dock_design))
+    if args.resume_from_run is not None and not args.resume_from_run.is_dir():
+        parser.error("--resume-from-run is not a run directory: {}".format(args.resume_from_run))
     calibration_only = bool(args.teach_dock_from_current or args.calibrate_height_from_rest_stop)
     if args.fixture_local_preview and (
         args.execute or args.ik_preflight_only or args.preflight_all_routes or calibration_only or args.reseat_dock_only
-        or args.recover_reference_to_dock or args.verify_dock_tactile_reference_only or args.capture_camera_only
-        or args.height_calibration or args.skip_previews
+        or args.recover_reference_to_dock or args.recover_low_pose_to_dock or args.verify_dock_tactile_reference_only or args.capture_camera_only
+        or args.height_calibration or args.runtime_height_datum or args.skip_previews
     ):
         parser.error("--fixture-local-preview is offline geometry only and cannot be combined with hardware modes, calibrated height, or --skip-previews")
-    if args.height_calibration and (float(args.board_height_offset_mm) != 0.0 or not args.skip_reference_pad_check or calibration_only):
+    if args.height_calibration and (float(args.board_height_offset_mm) != 0.0 or not args.skip_reference_pad_check or calibration_only or args.runtime_height_datum):
         parser.error("--height-calibration cannot be combined with manual height offset, reference-pad correction or dock teaching")
+    if args.runtime_height_datum and not args.calibrate_runtime_height and (
+        float(args.board_height_offset_mm) != 0.0 or not args.skip_reference_pad_check or calibration_only
+    ):
+        parser.error("--runtime-height-datum cannot be combined with manual height offset, reference-pad correction or dock teaching")
     if args.height_measurement and (
-        not args.first_contact_test or args.height_calibration or float(args.board_height_offset_mm) != 0.0
-        or not args.skip_reference_pad_check
+        (not args.calibrate_runtime_height and (not args.first_contact_test or args.runtime_height_datum))
+        or args.height_calibration or float(args.board_height_offset_mm) != 0.0 or not args.skip_reference_pad_check
     ):
         parser.error("--height-measurement requires --first-contact-test and an uncorrected board (no height calibration/offset or reference-pad correction)")
-    if args.height_measurement and (args.profile == "dense" or len(args.sites or []) != 1):
+    if args.height_measurement and not args.calibrate_runtime_height and (args.profile == "dense" or len(args.sites or []) != 1):
         parser.error("--height-measurement requires exactly one --site and a non-dense profile for repeatable reference coordinates")
     if args.height_measurement and (calibration_only or args.capture_camera_only or args.fixture_local_preview
-        or args.reseat_dock_only or args.recover_reference_to_dock or args.verify_dock_tactile_reference_only):
+        or args.reseat_dock_only or args.recover_reference_to_dock or args.recover_low_pose_to_dock
+        or args.verify_dock_tactile_reference_only):
         parser.error("--height-measurement cannot be combined with teaching, camera-only, geometry-preview or recovery modes")
     if calibration_only and (
         args.execute
@@ -579,12 +809,14 @@ def parse_args() -> argparse.Namespace:
         or args.preflight_all_routes
         or args.reseat_dock_only
         or args.recover_reference_to_dock
+        or args.recover_low_pose_to_dock
         or args.verify_dock_tactile_reference_only
         or args.capture_camera_only
     ):
         parser.error("Dock / rest-stop calibration only records a datum; run preflight or collection separately")
     if args.ik_preflight_only and (
-        args.execute or args.reseat_dock_only or args.recover_reference_to_dock or args.verify_dock_tactile_reference_only
+        args.execute or args.reseat_dock_only or args.recover_reference_to_dock
+        or args.recover_low_pose_to_dock or args.verify_dock_tactile_reference_only
     ):
         parser.error("--ik-preflight-only cannot be combined with a motion mode")
     if args.preflight_all_routes and not args.execute:
@@ -595,10 +827,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("--reseat-dock-only requires --execute and --yes-i-confirm-cr3-is-safe")
     if args.recover_reference_to_dock and not args.execute:
         parser.error("--recover-reference-to-dock requires --execute and --yes-i-confirm-cr3-is-safe")
-    if args.reseat_dock_only and args.recover_reference_to_dock:
+    recovery_mode_count = sum(
+        bool(value)
+        for value in (args.reseat_dock_only, args.recover_reference_to_dock, args.recover_low_pose_to_dock)
+    )
+    if recovery_mode_count > 1:
         parser.error("Use only one recovery mode at a time")
     if args.verify_dock_tactile_reference_only and (
-        args.execute or args.reseat_dock_only or args.recover_reference_to_dock
+        args.execute or args.reseat_dock_only or args.recover_reference_to_dock or args.recover_low_pose_to_dock
     ):
         parser.error("--verify-dock-tactile-reference-only cannot be combined with a motion mode")
     if args.capture_camera_only and (
@@ -607,12 +843,55 @@ def parse_args() -> argparse.Namespace:
         or args.preflight_all_routes
         or args.reseat_dock_only
         or args.recover_reference_to_dock
+        or args.recover_low_pose_to_dock
         or args.verify_dock_tactile_reference_only
     ):
         parser.error("--capture-camera-only cannot be combined with a robot or dock verification mode")
+    if args.calibrate_runtime_height and not args.execute:
+        parser.error("--calibrate-runtime-height measures physical contacts and requires --execute plus --yes-i-confirm-cr3-is-safe")
+    if args.refresh_dock_reference_at_start:
+        if not args.execute:
+            parser.error("--refresh-dock-reference-at-start is only valid for an execute collection and requires --yes-i-confirm-cr3-is-safe")
+        if (
+            calibration_only
+            or args.calibrate_runtime_height
+            or args.height_measurement
+            or args.first_contact_test
+            or args.fixture_local_preview
+            or args.capture_camera_only
+            or args.ik_preflight_only
+            or args.preflight_all_routes
+            or args.reseat_dock_only
+            or args.recover_reference_to_dock
+            or args.recover_low_pose_to_dock
+            or args.verify_dock_tactile_reference_only
+            or args.resume_from_run is not None
+        ):
+            parser.error("--refresh-dock-reference-at-start is only valid for a new normal execute collection")
+        if args.skip_dock_tactile_reference_check:
+            parser.error("--refresh-dock-reference-at-start requires the fresh tactile dock-reference check; omit --skip-dock-tactile-reference-check")
+        if args.no_tactip_preprocess:
+            parser.error("--refresh-dock-reference-at-start records a tactile reference image; omit --no-tactip-preprocess")
+    if args.resume_from_run is not None and (
+        args.calibrate_runtime_height
+        or args.height_measurement
+        or calibration_only
+        or args.first_contact_test
+        or args.fixture_local_preview
+        or args.capture_camera_only
+        or args.ik_preflight_only
+        or args.preflight_all_routes
+        or args.reseat_dock_only
+        or args.recover_reference_to_dock
+        or args.recover_low_pose_to_dock
+        or args.verify_dock_tactile_reference_only
+    ):
+        parser.error("--resume-from-run is only valid for a normal collection run")
     if args.execute and not args.yes_i_confirm_cr3_is_safe:
         parser.error("--execute requires --yes-i-confirm-cr3-is-safe")
-    if args.execute and bool(args.no_tactip_preprocess):
+    if args.execute and bool(args.no_tactip_preprocess) and not (
+        args.reseat_dock_only or args.recover_reference_to_dock or args.recover_low_pose_to_dock
+    ):
         parser.error("Formal visual-contact collection requires shared TacTip preprocessing; omit --no-tactip-preprocess")
     if args.calibrate_height_from_rest_stop and bool(args.no_tactip_preprocess):
         parser.error("Rest-stop height calibration records a tactile reference image; omit --no-tactip-preprocess")
@@ -661,6 +940,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--board-height-offset-mm must be finite")
     if not math.isfinite(float(args.board_yaw_deg)):
         parser.error("--board-yaw-deg must be finite")
+    if not math.isfinite(float(args.board_yaw_offset_deg)):
+        parser.error("--board-yaw-offset-deg must be finite")
     if not 1.0 <= float(args.speed) <= 5.0:
         parser.error("--speed must be in [1, 5] for visual-contact collection")
     if not 0.0 < float(args.step_mm) <= 0.5:
@@ -683,7 +964,11 @@ def parse_args() -> argparse.Namespace:
         parser.error("--allow-deep-contact-localization is only valid with --first-contact-test")
     if args.allow_deep_contact_localization and not args.skip_reference_pad_check:
         parser.error("Deep contact localization is for one board site only; omit --use-reference-pad-check so its enlarged search budget cannot reach the dock reference pad")
-    required_capture_depth = float(args.min_post_contact_depth_mm) if args.first_contact_test else float(args.max_post_contact_depth_mm)
+    required_capture_depth = (
+        0.0 if args.calibrate_runtime_height
+        else float(args.min_post_contact_depth_mm) if args.first_contact_test
+        else float(args.max_post_contact_depth_mm)
+    )
     if float(args.max_extra_below_planned_contact_mm) + 1e-9 < required_capture_depth + float(args.contact_search_margin_mm):
         parser.error(
             "--max-extra-below-planned-contact-mm must cover the deepest requested indentation PLUS "
@@ -819,14 +1104,24 @@ def fixture_from_profile(profile: dict[str, Any], dock_design: dict[str, Any], a
     dock_tcp = finite_pose(profile.get("dock_tcp", ()), "fixture dock TCP")
     local = tuple(float(value) for value in dict(dock_design["tactip_reference"])["nominal_seated_tool_tcp_local_mm"])
     dock_rotation = Rotation.from_euler("XYZ", dock_tcp[3:], degrees=True).as_matrix()
-    # Tool +Z is the physical press-down axis.  The keyed fixture convention
-    # makes tile +X = Tool +X, tile +Y = Tool -Y, and tile +Z = Tool -Z.
+    # Tool +Z is the physical press-down axis. The keyed fixture convention
+    # establishes the rigid mounting relation, while the saved profile records
+    # the one fixed planar registration from the tile CAD axes to that physical
+    # dock frame. It is not re-estimated during sampling or height checking.
     adaptor = np.diag((1.0, -1.0, -1.0))
-    board_yaw = float(profile.get("board_yaw_deg", 0.0))
-    if not math.isfinite(board_yaw):
+    recorded_board_yaw = float(profile.get("board_yaw_deg", 0.0))
+    if not math.isfinite(recorded_board_yaw):
         raise ValueError("Fixture profile board_yaw_deg must be finite; teach a fresh datum")
-    yaw = Rotation.from_euler("Z", board_yaw, degrees=True).as_matrix()
-    tile_to_base = dock_rotation @ adaptor @ yaw
+    runtime_yaw_offset = float(getattr(args, "board_yaw_offset_deg", 0.0))
+    if not math.isfinite(runtime_yaw_offset):
+        raise ValueError("Runtime board-yaw offset must be finite")
+    board_yaw = recorded_board_yaw + runtime_yaw_offset
+    if not math.isfinite(board_yaw):
+        raise ValueError("Effective board yaw must be finite")
+    saved_yaw = Rotation.from_euler("Z", recorded_board_yaw, degrees=True).as_matrix()
+    runtime_yaw = Rotation.from_euler("Z", runtime_yaw_offset, degrees=True).as_matrix()
+    fixed_tile_to_base = dock_rotation @ adaptor @ saved_yaw
+    tile_to_base = fixed_tile_to_base @ runtime_yaw
     if not np.isfinite(tile_to_base).all() or np.linalg.det(tile_to_base) < 0.99:
         raise RuntimeError("Fixture axis construction is not a proper rotation")
     return FixtureTransform(
@@ -834,8 +1129,43 @@ def fixture_from_profile(profile: dict[str, Any], dock_design: dict[str, Any], a
         dock_tcp_local_mm=local,
         tile_to_base=tile_to_base,
         dock_rotation=dock_rotation,
-        board_yaw_deg=float(profile.get("board_yaw_deg", 0.0)),
+        board_yaw_deg=board_yaw,
+        fixed_tile_to_base=fixed_tile_to_base,
+        board_pivot_local_mm=(0.0, 0.0, 0.0),
+        runtime_yaw_offset_deg=runtime_yaw_offset,
     )
+
+
+def board_orientation_metadata(
+    fixture: FixtureTransform | None,
+    args: argparse.Namespace,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Describe the immutable fixture yaw plus any per-run board correction.
+
+    The physical dock datum is intentionally independent from this value.  A
+    user may rotate or re-key a board relative to the dock and change the plan
+    at runtime without teaching a new TacTip rest pose or mutating the stored
+    fixture profile.
+    """
+
+    if fixture is None:
+        return None
+    offset = float(getattr(args, "board_yaw_offset_deg", 0.0))
+    if profile is not None:
+        saved = float(profile.get("board_yaw_deg", 0.0))
+    else:
+        saved = float(fixture.board_yaw_deg) - offset
+    return {
+        "saved_profile_yaw_deg": saved,
+        "runtime_yaw_offset_deg": offset,
+        "effective_yaw_deg": float(fixture.board_yaw_deg),
+        "transform_version": "board-centre-pivot.v1",
+        "rotation_pivot_tile_local_mm": list(fixture.board_pivot_local_mm),
+        "pivot": "fixed tile geometric centre (tile-local 0, 0); dock and rest TCP remain stationary",
+        "positive_direction": "tile-local +X toward +Y about tile-local +Z (right-hand rule)",
+        "mutates_fixture_profile": False,
+    }
 
 
 def dock_alignment_decision(
@@ -1154,6 +1484,215 @@ def teach_rest_stop_height_profile(args: argparse.Namespace, dock_design: dict[s
             )
         )
         return 0
+    finally:
+        if preprocessor is not None:
+            preprocessor.close()
+        camera.close()
+        robot.close()
+
+
+def refresh_dock_tactile_reference_at_start(
+    args: argparse.Namespace,
+    dock_design: dict[str, Any],
+) -> dict[str, Any]:
+    """Replace only the camera-dependent rest-crossbar image reference.
+
+    The physical rest crossbar, saved Tool(2) TCP, height datum and board yaw
+    are fixed installation data.  A TacTip head/camera rotation changes the
+    image, not those geometry values. This startup step automatically lowers
+    a tightly aligned TCP from directly above the crossbar at 1% speed, then
+    captures two fresh, mutually stable tactile images. It never changes the
+    fixed geometry fields in the fixture profile.
+    """
+    if not args.fixture_profile.is_file():
+        raise FileNotFoundError(
+            "--refresh-dock-reference-at-start needs an existing keyed fixture profile at {}. "
+            "Teach the fixed crossbar datum once before using this image-only refresh."
+            .format(args.fixture_profile)
+        )
+    rest_stop = rest_stop_contract(dock_design)
+    profile = read_json(args.fixture_profile)
+    fixture = fixture_from_profile(profile, dock_design, args)
+    previous_sha256 = sha256_file(args.fixture_profile)
+    previous_reference = dict(profile.get("tactile_rest_stop_reference", {}))
+    reference_root = (
+        args.fixture_profile.parent
+        / "tactile_rest_stop_references"
+        / "{}_startup_reference_{}".format(args.fixture_profile.stem, time.strftime("%Y%m%d_%H%M%S"))
+    ).resolve()
+    robot = DobotCR3LiveClient(args.robot_ip, args.dashboard_port, args.move_port, args.robot_timeout_sec)
+    camera = GelSightCapture(parse_camera_source(args.camera_source), args.width, args.height, args.fps, args.camera_read_timeout_sec)
+    preprocessor: Any | None = None
+    try:
+        reference_root.mkdir(parents=True, exist_ok=False)
+        preprocessor = create_tactip_preprocessor(args, reference_root)
+        if preprocessor is None:
+            raise RuntimeError("Startup tactile-reference refresh requires TacTip preprocessing")
+        camera.open()
+        robot.connect()
+        replies = robot.set_user_tool(args.user, args.tool)
+        robot.require_motion_ready()
+        stable_tcp, stability = read_stable_rest_stop_pose(robot, args)
+        initial_alignment = dock_alignment_decision(fixture, stable_tcp, args)
+        automatic_reseat: dict[str, Any] = {
+            "status": "not_required",
+            "initial_alignment": initial_alignment,
+            "motion": None,
+        }
+        if initial_alignment["status"] == "aligned_above_dock":
+            if args.disable_auto_dock_reseat:
+                raise RuntimeError(
+                    "TacTip is {:.3f} mm above the fixed crossbar, but automatic height adjustment is disabled. "
+                    "Remove --disable-auto-dock-reseat or re-seat it manually."
+                    .format(float(initial_alignment["above_dock_mm"]))
+                )
+            reseat_args = argparse.Namespace(**vars(args))
+            reseat_args.speed = min(float(args.speed), DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT)
+            reseat_motion = move_and_verify(
+                robot,
+                "startup fixed-crossbar height adjustment",
+                fixture.dock_tcp,
+                reseat_args,
+            )
+            stable_tcp, stability = read_stable_rest_stop_pose(robot, args)
+            automatic_reseat = {
+                "status": "completed",
+                "initial_alignment": initial_alignment,
+                "motion": reseat_motion,
+                "post_reseat_tcp": list_pose(stable_tcp),
+            }
+        elif initial_alignment["status"] != "already_seated":
+            raise RuntimeError(
+                "Current TCP is not in the permitted automatic height-adjustment envelope: "
+                "tile-local delta {:+.3f} / {:+.3f} / {:+.3f} mm, rotation {:.3f} deg. "
+                "The fixed height/profile was not changed and no CR3 motion was sent."
+                .format(
+                    *[float(value) for value in initial_alignment["delta_tile_local_mm"]],
+                    float(initial_alignment["rotation_error_deg"]),
+                )
+            )
+        position_error = position_error_mm(fixture.dock_tcp, stable_tcp)
+        rotation_error = rotation_error_deg(fixture.dock_tcp, stable_tcp)
+        if (
+            position_error > float(args.dock_position_tolerance_mm)
+            or rotation_error > float(args.dock_rotation_tolerance_deg)
+        ):
+            raise RuntimeError(
+                "Current TCP is {:.3f} mm / {:.3f} deg from the fixed crossbar datum "
+                "(limits {:.3f} mm / {:.3f} deg). The height/profile was not changed and no CR3 motion was sent. "
+                "Seat TacTip fully in the crossbar before refreshing the camera reference."
+                .format(
+                    position_error,
+                    rotation_error,
+                    float(args.dock_position_tolerance_mm),
+                    float(args.dock_rotation_tolerance_deg),
+                )
+            )
+        primary_capture, primary_feature, camera_time = capture_record(
+            camera,
+            args,
+            reference_root,
+            preprocessor,
+            "startup_rest_crossbar_reference",
+            max(3, int(args.baseline_frames)),
+            0.0,
+        )
+        add_model_roi_path(primary_capture)
+        time.sleep(float(args.settle_sec))
+        repeat_capture, repeat_feature, _camera_time = capture_record(
+            camera,
+            args,
+            reference_root,
+            preprocessor,
+            "startup_rest_crossbar_repeat",
+            max(3, int(args.probe_frames)),
+            camera_time,
+            primary_feature,
+        )
+        add_model_roi_path(repeat_capture)
+        repeat_capture["texture_similarity"] = tactile_texture_similarity(primary_feature, repeat_feature)
+        motion = dict(repeat_capture.get("marker_motion", {}))
+        texture = dict(repeat_capture.get("texture_similarity", {}))
+        repeat_failures: list[str] = []
+        if float(motion.get("mean", float("inf"))) > DEFAULT_STARTUP_REFERENCE_MAX_MARKER_MEAN_PX:
+            repeat_failures.append("repeat marker motion mean exceeds {:.2f}px".format(DEFAULT_STARTUP_REFERENCE_MAX_MARKER_MEAN_PX))
+        if float(motion.get("p95", float("inf"))) > DEFAULT_STARTUP_REFERENCE_MAX_MARKER_P95_PX:
+            repeat_failures.append("repeat marker motion p95 exceeds {:.2f}px".format(DEFAULT_STARTUP_REFERENCE_MAX_MARKER_P95_PX))
+        if float(texture.get("correlation", float("-inf"))) < DEFAULT_STARTUP_REFERENCE_MIN_TEXTURE_CORRELATION:
+            repeat_failures.append("repeat texture correlation is below {:.2f}".format(DEFAULT_STARTUP_REFERENCE_MIN_TEXTURE_CORRELATION))
+        if float(texture.get("normalized_mae", float("inf"))) > DEFAULT_STARTUP_REFERENCE_MAX_TEXTURE_NORMALIZED_MAE:
+            repeat_failures.append("repeat normalized texture MAE exceeds {:.2f}".format(DEFAULT_STARTUP_REFERENCE_MAX_TEXTURE_NORMALIZED_MAE))
+        if repeat_failures:
+            raise RuntimeError(
+                "Fresh startup tactile reference is not stable: {}. The fixed height/profile was not changed."
+                .format("; ".join(repeat_failures))
+            )
+
+        history_path = (
+            args.fixture_profile.parent
+            / "fixture_profile_history"
+            / "{}_before_startup_reference_{}.json".format(
+                args.fixture_profile.stem,
+                time.strftime("%Y%m%d_%H%M%S"),
+            )
+        )
+        write_json(history_path, profile)
+        acceptance = rest_stop_acceptance_from_repeat(repeat_capture)
+        updated_profile = dict(profile)
+        updated_profile["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        updated_profile["tactile_rest_stop_reference"] = {
+            "schema": "coverage_board_tactip_rest_stop_tactile_reference.v1",
+            "reference_root": str(reference_root),
+            "primary_capture": primary_capture,
+            "repeat_capture": repeat_capture,
+            "acceptance": acceptance,
+            "meaning": (
+                "This reference is refreshed for the current TacTip camera/head orientation while the "
+                "apex is at the unchanged physical crossbar. It is for image verification only and does not "
+                "change the fixed Tool TCP, crossbar height, or board axes."
+            ),
+        }
+        updated_profile["startup_tactile_reference_refresh"] = {
+            "created_at": updated_profile["created_at"],
+            "fixed_dock_tcp": list_pose(fixture.dock_tcp),
+            "observed_tcp": list_pose(stable_tcp),
+            "position_error_mm": position_error,
+            "rotation_error_deg": rotation_error,
+            "stability": stability,
+            "set_user_tool_replies": replies,
+            "previous_reference_root": previous_reference.get("reference_root"),
+            "current_reference_root": str(reference_root),
+            "fixed_crossbar_tile_local_contact_mm": list(rest_stop["contact_centre_tile_local_mm"]),
+            "fixed_crossbar_top_surface_tile_z_mm": float(rest_stop["top_surface_z_mm"]),
+            "geometry_changed": False,
+            "automatic_crossbar_height_adjustment": automatic_reseat,
+        }
+        write_json(args.fixture_profile, updated_profile)
+        refresh_record = {
+            "mode": "automatic_startup_tactile_reference_refresh.v1",
+            "no_board_site_motion_sent": True,
+            "crossbar_height_adjustment_motion_sent": automatic_reseat["status"] == "completed",
+            "old_tactile_reference_ignored": True,
+            "fixed_geometry_preserved": True,
+            "fixed_dock_tcp": list_pose(fixture.dock_tcp),
+            "observed_tcp": list_pose(stable_tcp),
+            "position_error_mm": position_error,
+            "rotation_error_deg": rotation_error,
+            "fixed_crossbar_tile_local_contact_mm": list(rest_stop["contact_centre_tile_local_mm"]),
+            "fixed_crossbar_top_surface_tile_z_mm": float(rest_stop["top_surface_z_mm"]),
+            "previous_fixture_profile_sha256": previous_sha256,
+            "previous_fixture_profile_backup": str(history_path),
+            "refreshed_fixture_profile_sha256": sha256_file(args.fixture_profile),
+            "previous_reference_root": previous_reference.get("reference_root"),
+            "current_reference_root": str(reference_root),
+            "repeat_acceptance": acceptance,
+            "automatic_crossbar_height_adjustment": automatic_reseat,
+        }
+        print(
+            "Startup tactile reference refreshed at the unchanged fixed crossbar datum; TCP/height/board yaw were preserved.",
+            flush=True,
+        )
+        return refresh_record
     finally:
         if preprocessor is not None:
             preprocessor.close()
@@ -1595,6 +2134,237 @@ def build_samples(
     return [BoardSample(index=index, **{key: value for key, value in asdict(sample).items() if key != "index"}) for index, sample in enumerate(expanded, start=1)]
 
 
+def resume_unattempted_samples(
+    args: argparse.Namespace,
+    samples: Sequence[BoardSample],
+    board_manifest_path: Path,
+) -> list[BoardSample]:
+    """Return the untouched suffix of a safely stopped, identical plan.
+
+    Resuming by sample number alone is too easy to misuse after changing a
+    board, fixture, seed, or planning option.  The previous plan is therefore
+    treated as an immutable receipt: its complete sample sequence must equal
+    the sequence generated by the current command, and the collection records
+    must be an exact prefix of that plan.
+    """
+
+    source_dir = getattr(args, "resume_from_run", None)
+    if source_dir is None:
+        return list(samples)
+
+    source_dir = Path(source_dir).resolve()
+    source_plan_path = source_dir / "sampling_plan.json"
+    source_collection_path = source_dir / "collection.json"
+    if not source_plan_path.is_file() or not source_collection_path.is_file():
+        raise FileNotFoundError(
+            "--resume-from-run requires both sampling_plan.json and collection.json in {}"
+            .format(source_dir)
+        )
+
+    source_plan = read_json(source_plan_path)
+    source_collection = read_json(source_collection_path)
+    if source_plan.get("schema") != "cr3_coverage_board_sampling_plan.v1":
+        raise ValueError("Unsupported resume sampling-plan schema in {}".format(source_plan_path))
+    if source_collection.get("schema") != "cr3_coverage_board_collection.v1":
+        raise ValueError("Unsupported resume collection schema in {}".format(source_collection_path))
+    if source_collection.get("status") != "stopped_after_no_contact":
+        raise ValueError(
+            "Resume source status is {!r}, expected 'stopped_after_no_contact'."
+            .format(source_collection.get("status"))
+        )
+    if source_collection.get("finish_pose") != "seated_dock_tcp":
+        raise ValueError(
+            "Resume source did not finish at the seated dock TCP; automatic continuation is refused."
+        )
+
+    current_manifest_hash = sha256_file(board_manifest_path)
+    current_dock_hash = sha256_file(args.dock_design)
+    current_fixture_hash = sha256_file(args.fixture_profile)
+    expected_bindings = {
+        "tile": str(args.tile),
+        "board manifest": current_manifest_hash,
+        "dock design": current_dock_hash,
+        "fixture profile": current_fixture_hash,
+    }
+    actual_bindings = {
+        "tile": str(source_collection.get("tile_id", "")),
+        "board manifest": str(source_plan.get("board_manifest_sha256", "")),
+        "dock design": str(source_plan.get("dock_design_sha256", "")),
+        "fixture profile": str(source_collection.get("fixture_profile_sha256", "")),
+    }
+    mismatches = [
+        "{}: source={} current={}".format(name, actual_bindings[name], expected)
+        for name, expected in expected_bindings.items()
+        if actual_bindings[name] != expected
+    ]
+    if mismatches:
+        raise ValueError("Resume fixture/board binding mismatch: {}".format("; ".join(mismatches)))
+
+    # A resume must not silently reinterpret the saved local plan under a
+    # different physical board orientation. Older plans predate the explicit
+    # field and are treated as having the historical zero runtime offset.
+    source_orientation = dict(source_plan.get("board_orientation", {}))
+    source_offset = float(source_orientation.get("runtime_yaw_offset_deg", 0.0))
+    current_offset = float(getattr(args, "board_yaw_offset_deg", 0.0))
+    if not math.isfinite(source_offset) or not math.isfinite(current_offset) or not math.isclose(
+        source_offset, current_offset, abs_tol=1e-9
+    ):
+        raise ValueError(
+            "Resume board-orientation mismatch: source runtime yaw offset is {:+.6f} deg but the "
+            "current command requests {:+.6f} deg. Use the identical --board-yaw-offset-deg value."
+            .format(source_offset, current_offset)
+        )
+    source_transform_version = str(source_orientation.get("transform_version", "legacy-dock-pivot"))
+    if abs(current_offset) > 1e-9 and source_transform_version != "board-centre-pivot.v1":
+        raise ValueError(
+            "Resume source used the legacy dock-pivot board rotation, while current plans rotate around the "
+            "tile centre. Generate a fresh plan/run for any non-zero --board-yaw-offset-deg; the old TCP "
+            "targets cannot be reinterpreted safely."
+        )
+
+    generated_payload = []
+    for sample in samples:
+        row = asdict(sample)
+        row["local_contact_mm"] = list(row["local_contact_mm"])
+        generated_payload.append(row)
+    source_payload = list(source_plan.get("samples", []))
+    if generated_payload != source_payload:
+        raise ValueError(
+            "The current command does not regenerate the exact source sampling plan. "
+            "Use the same sample count, seed, spatial layout, depth range, tilt policy and filters."
+        )
+
+    attempted_items = list(source_collection.get("samples", []))
+    attempted_ids = [str(dict(item.get("sample", {})).get("sample_id", "")) for item in attempted_items]
+    planned_ids = [sample.sample_id for sample in samples]
+    if not attempted_ids or attempted_ids != planned_ids[: len(attempted_ids)]:
+        raise ValueError(
+            "The source collection is not a non-empty exact prefix of its sampling plan; "
+            "automatic continuation is refused."
+        )
+    remaining = list(samples[len(attempted_ids) :])
+    if not remaining:
+        raise ValueError("The source run has no unattempted samples left to resume")
+
+    captured_count = sum(
+        1 for item in attempted_items if dict(item.get("result", {})).get("status") == "captured"
+    )
+    no_contact_count = sum(
+        1 for item in attempted_items if dict(item.get("result", {})).get("status") == "no_contact"
+    )
+    args._resume_info = {
+        "source_run": str(source_dir),
+        "source_sampling_plan": str(source_plan_path),
+        "source_sampling_plan_sha256": sha256_file(source_plan_path),
+        "source_collection": str(source_collection_path),
+        "source_collection_sha256": sha256_file(source_collection_path),
+        "original_sample_count": len(samples),
+        "attempted_prefix_count": len(attempted_ids),
+        "captured_prefix_count": captured_count,
+        "no_contact_prefix_count": no_contact_count,
+        "first_remaining_index": remaining[0].index,
+        "remaining_sample_count": len(remaining),
+    }
+    print(
+        "Resume verified: {} attempted ({} captured, {} no-contact); continuing exact plan at "
+        "sample {} with {} samples remaining.".format(
+            len(attempted_ids),
+            captured_count,
+            no_contact_count,
+            remaining[0].index,
+            len(remaining),
+        ),
+        flush=True,
+    )
+    return remaining
+
+
+def build_runtime_height_calibration_samples(
+    tile: dict[str, Any],
+    csv_rows: Sequence[dict[str, str]],
+    args: argparse.Namespace,
+) -> list[BoardSample]:
+    """Build repeated height checks on the broad, known flat reference only.
+
+    Height is a global fixture property. A ridge, curved cap, or edge can
+    provide a valid tactile contact while still being laterally misplaced, so
+    it cannot authorise the board transform. The v4 tile contains a 3x3
+    flat-reference lattice; select its four outer sites and repeat each
+    contact three times. This measures height without treating feature
+    geometry as a height correction.
+    """
+
+    regions = {str(value) for value in tile.get("region_ids", [])}
+    candidates = [
+        row for row in csv_rows
+        if str(row.get("region_id")) in regions
+        and str(row.get("category")) == "flat"
+        and str(row.get("stimulus")) == "flat_reference"
+    ]
+    if len(candidates) < 4:
+        raise ValueError(
+            "{} needs at least four broad flat_reference sites for runtime height calibration; "
+            "do not substitute edges or curved features".format(args.tile)
+        )
+
+    # Future boards can include more than one flat level. Keep one populated
+    # nominal plane rather than mixing those levels into an artificial datum.
+    heights: dict[float, list[dict[str, str]]] = {}
+    for row in candidates:
+        heights.setdefault(float(row["expected_surface_z_mm"]), []).append(row)
+    candidates = max(
+        heights.values(),
+        key=lambda group: (len(group), -float(group[0]["expected_surface_z_mm"])),
+    )
+    if len(candidates) < 4:
+        raise ValueError("{} has no single broad four-site flat_reference plane".format(args.tile))
+
+    min_x = min(float(row["board_x_mm"]) for row in candidates)
+    max_x = max(float(row["board_x_mm"]) for row in candidates)
+    min_y = min(float(row["board_y_mm"]) for row in candidates)
+    max_y = max(float(row["board_y_mm"]) for row in candidates)
+    selected_rows: list[dict[str, str]] = []
+    used_site_ids: set[str] = set()
+    for target_x, target_y in ((min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)):
+        row = min(
+            (candidate for candidate in candidates if str(candidate["site_id"]) not in used_site_ids),
+            key=lambda candidate: (
+                (float(candidate["board_x_mm"]) - target_x) ** 2
+                + (float(candidate["board_y_mm"]) - target_y) ** 2,
+                str(candidate["site_id"]),
+            ),
+        )
+        selected_rows.append(row)
+        used_site_ids.add(str(row["site_id"]))
+    local_centre = np.asarray(tile["center_board_xy_mm"], dtype=float)
+    samples: list[BoardSample] = []
+    for row in selected_rows:
+        site_id = str(row["site_id"])
+        local_xy = np.asarray((float(row["board_x_mm"]), float(row["board_y_mm"])), dtype=float) - local_centre
+        expected_z = float(row["expected_surface_z_mm"])
+        for repeat in range(1, RUNTIME_HEIGHT_REPEATS_PER_SITE + 1):
+            samples.append(
+                BoardSample(
+                    index=len(samples) + 1,
+                    sample_id="{}_{}_runtime_height_r{:02d}".format(args.tile, site_id, repeat),
+                    tile_id=args.tile,
+                    source_seed_site_id=site_id,
+                    region_id=str(row["region_id"]),
+                    category=str(row["category"]),
+                    stimulus=str(row["stimulus"]),
+                    replicate=repeat,
+                    local_contact_mm=(float(local_xy[0]), float(local_xy[1]), expected_z),
+                    expected_surface_z_mm=expected_z,
+                    post_contact_depth_mm=0.0,
+                    tilt_x_deg=0.0,
+                    tilt_y_deg=0.0,
+                    jitter_x_mm=0.0,
+                    jitter_y_mm=0.0,
+                )
+            )
+    return samples
+
+
 def build_ik_candidate_pool(
     manifest: dict[str, Any],
     tile: dict[str, Any],
@@ -1735,12 +2505,19 @@ def apply_first_contact_test(samples: list[BoardSample], args: argparse.Namespac
 
 def board_surface_correction_mm(sample: BoardSample, args: argparse.Namespace) -> float:
     calibration = getattr(args, "_height_calibration", None)
-    if calibration is None:
-        return float(args.board_height_offset_mm)
-    if abs(sample.tilt_x_deg) > 1e-6 or abs(sample.tilt_y_deg) > 1e-6:
-        raise ValueError("This height calibration is valid only at zero tilt; use --zero-tilt. Tilted sampling needs independent TCP/apex and orientation validation.")
-    from board_height_calibration import height_correction_at
-    return height_correction_at(calibration, sample.local_contact_mm[0], sample.local_contact_mm[1])
+    if calibration is not None:
+        if abs(sample.tilt_x_deg) > 1e-6 or abs(sample.tilt_y_deg) > 1e-6:
+            raise ValueError("This height calibration is valid only at zero tilt; use --zero-tilt. Tilted sampling needs independent TCP/apex and orientation validation.")
+        from board_height_calibration import height_correction_at
+        return height_correction_at(calibration, sample.local_contact_mm[0], sample.local_contact_mm[1])
+    runtime_datum = getattr(args, "_runtime_height_datum", None)
+    if runtime_datum is not None:
+        # The board has shaped regions, so use the offset measured at the known
+        # central point of this region.  The visual first-contact loop still
+        # makes the final local contact decision for every capture.
+        offsets = dict(runtime_datum.get("region_offsets_tile_z_mm", {}))
+        return float(offsets.get(str(getattr(sample, "region_id", "")), runtime_datum["offset_tile_z_mm"]))
+    return float(args.board_height_offset_mm)
 
 
 def make_route(
@@ -1760,11 +2537,11 @@ def make_route(
     approach_position = contact_position - press_axis * float(args.approach_clearance_mm)
     approach_pose = finite_pose(tuple(approach_position) + orientation, "site approach")
     dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-    dock_exit = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+    dock_exit = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
     # Keep the first high waypoint directly above the keyed dock.  The former
     # board-centre waypoint can be outside the CR3 workspace even though the
     # seated datum is reachable.
-    dock_high = fixture.pose((dock_local[0], dock_local[1], float(args.safe_height_mm)))
+    dock_high = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], float(args.safe_height_mm)))
     high_pose = fixture.pose((local_contact[0], local_contact[1], float(args.safe_height_mm)), sample.tilt_x_deg, sample.tilt_y_deg)
     # The reference correction concerns the board plane, not the dock. It is
     # applied after the globally clear route is reached.
@@ -1782,6 +2559,7 @@ def make_route(
         "press_axis_base": press_axis,
         "board_height_offset_mm": float(args.board_height_offset_mm),
         "calibrated_height_correction_mm": height_correction if getattr(args, "_height_calibration", None) is not None else None,
+        "runtime_height_correction_mm": height_correction if getattr(args, "_runtime_height_datum", None) is not None else None,
         "effective_surface_z_mm": float(local_contact[2] + np.dot(correction, normal)),
         "outbound": (("dock_exit", dock_exit), ("dock_high", dock_high), ("site_high", high_pose), ("approach", approach_pose)),
         "return": (("site_high", high_pose), ("dock_high", dock_high), ("dock_exit", dock_exit)),
@@ -1856,14 +2634,14 @@ def reference_route(fixture: FixtureTransform, dock_design: dict[str, Any], args
     # solid.  The TCP must target its exposed top face, whose absolute local
     # height is recorded separately in every dock design.
     local_contact[2] = float(reference.get("top_z_mm", local_contact[2]))
-    base_contact = fixture.pose(local_contact)
+    base_contact = getattr(fixture, "dock_pose", fixture.pose)(local_contact)
     press_axis = fixture.press_axis(0.0, 0.0)
     approach_position = np.asarray(base_contact[:3]) - press_axis * float(args.approach_clearance_mm)
     approach = finite_pose(tuple(approach_position) + tuple(base_contact[3:]), "reference-pad approach")
     dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-    exit_pose = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
-    dock_high = fixture.pose((dock_local[0], dock_local[1], float(args.safe_height_mm)))
-    high = fixture.pose((local_contact[0], local_contact[1], float(args.safe_height_mm)))
+    exit_pose = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+    dock_high = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], float(args.safe_height_mm)))
+    high = getattr(fixture, "dock_pose", fixture.pose)((local_contact[0], local_contact[1], float(args.safe_height_mm)))
     return {
         "local_contact_mm": local_contact,
         "contact_tcp": base_contact,
@@ -1887,7 +2665,7 @@ def write_plan_csv(
 ) -> None:
     fields = [
         "sample_index", "sample_id", "tile_id", "source_seed_site_id", "region_id", "category", "stimulus", "replicate",
-        "local_x_mm", "local_y_mm", "expected_surface_z_mm", "board_height_offset_mm", "calibrated_height_correction_mm", "effective_surface_z_mm", "post_contact_depth_mm", "tilt_x_deg", "tilt_y_deg", "jitter_x_mm", "jitter_y_mm",
+        "local_x_mm", "local_y_mm", "expected_surface_z_mm", "board_height_offset_mm", "calibrated_height_correction_mm", "runtime_height_correction_mm", "effective_surface_z_mm", "post_contact_depth_mm", "tilt_x_deg", "tilt_y_deg", "jitter_x_mm", "jitter_y_mm",
         "planned_contact_tcp_x", "planned_contact_tcp_y", "planned_contact_tcp_z", "planned_contact_tcp_Rx", "planned_contact_tcp_Ry", "planned_contact_tcp_Rz",
         "planned_approach_tcp_x", "planned_approach_tcp_y", "planned_approach_tcp_z", "planned_approach_tcp_Rx", "planned_approach_tcp_Ry", "planned_approach_tcp_Rz",
         "planned_site_high_tcp_x", "planned_site_high_tcp_y", "planned_site_high_tcp_z", "planned_site_high_tcp_Rx", "planned_site_high_tcp_Ry", "planned_site_high_tcp_Rz",
@@ -1911,6 +2689,7 @@ def write_plan_csv(
                 "expected_surface_z_mm": "{:.4f}".format(sample.expected_surface_z_mm),
                 "board_height_offset_mm": "{:.4f}".format(args.board_height_offset_mm),
                 "calibrated_height_correction_mm": board_surface_correction_mm(sample, args) if getattr(args, "_height_calibration", None) is not None else "",
+                "runtime_height_correction_mm": board_surface_correction_mm(sample, args) if getattr(args, "_runtime_height_datum", None) is not None else "",
                 "effective_surface_z_mm": "{:.4f}".format(sample.local_contact_mm[2] + board_surface_correction_mm(sample, args)),
                 "post_contact_depth_mm": "{:.4f}".format(sample.post_contact_depth_mm),
                 "tilt_x_deg": "{:.3f}".format(sample.tilt_x_deg),
@@ -1939,19 +2718,55 @@ def _cached_preview_mesh_arrays(
     file_size: int,
     face_limit: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load and thin display geometry once; metadata arguments invalidate changes."""
+    """Load a coherent solid preview mesh; metadata arguments invalidate changes.
+
+    Selecting evenly spaced faces from a dense STL leaves disconnected
+    triangles and makes an otherwise solid part look like a foggy point
+    cloud.  Manifold simplification preserves a closed surface and bounds the
+    geometric displacement while keeping the interactive HTML lightweight.
+    """
     import trimesh
 
-    mesh = trimesh.load_mesh(Path(resolved_path), force="mesh", process=False)
+    mesh = trimesh.load_mesh(Path(resolved_path), force="mesh", process=True)
     if not isinstance(mesh, trimesh.Trimesh):
         raise RuntimeError("Could not load mesh for preview: {}".format(resolved_path))
-    vertices, faces = mesh.vertices, mesh.faces
-    if len(faces) > face_limit:
-        indices = np.linspace(0, len(faces) - 1, face_limit, dtype=int)
-        faces = faces[indices]
-        used, remap = np.unique(faces.reshape(-1), return_inverse=True)
-        vertices = vertices[used]
-        faces = remap.reshape((-1, 3))
+    display_mesh = mesh
+    if len(mesh.faces) > face_limit:
+        try:
+            from manifold3d import Manifold, Mesh
+
+            solid = Manifold(
+                mesh=Mesh(
+                    vert_properties=np.asarray(mesh.vertices, dtype=np.float32),
+                    tri_verts=np.asarray(mesh.faces, dtype=np.uint32),
+                )
+            )
+            if solid.num_tri() <= 0:
+                raise RuntimeError("Manifold rejected the source mesh")
+            span_mm = max(float(np.max(mesh.extents)), 1.0)
+            tolerance_mm = max(0.01, span_mm * 0.00025)
+            simplified = solid.simplify(tolerance_mm)
+            for _ in range(6):
+                if 0 < simplified.num_tri() <= face_limit:
+                    break
+                tolerance_mm *= 1.6
+                candidate = solid.simplify(tolerance_mm)
+                if 0 < candidate.num_tri() < simplified.num_tri():
+                    simplified = candidate
+            if simplified.num_tri() > 0:
+                solid_mesh = simplified.to_mesh()
+                display_mesh = trimesh.Trimesh(
+                    vertices=np.asarray(solid_mesh.vert_properties, dtype=float)[:, :3],
+                    faces=np.asarray(solid_mesh.tri_verts, dtype=np.int64),
+                    process=False,
+                )
+        except Exception as exc:
+            print(
+                "Preview mesh simplification failed for {}; using the complete solid mesh: {}: {}"
+                .format(resolved_path, type(exc).__name__, exc),
+                flush=True,
+            )
+    vertices, faces = display_mesh.vertices, display_mesh.faces
     # Keep only the displayed arrays, not an entire large STL's backing data.
     # All previews share these arrays, so accidental in-place edits must fail.
     vertices = np.array(vertices, copy=True)
@@ -1970,20 +2785,80 @@ def load_preview_mesh_arrays(path: Path, face_limit: int) -> tuple[np.ndarray, n
     return _cached_preview_mesh_arrays(str(resolved), metadata.st_mtime_ns, metadata.st_size, int(face_limit))
 
 
-def write_plan_preview(path: Path, tile: dict[str, Any], board_dir: Path, dock_design: dict[str, Any], samples: list[BoardSample]) -> None:
+def rotate_board_points_for_fixed_preview(
+    points: Sequence[Sequence[float]] | np.ndarray,
+    runtime_yaw_offset_deg: float,
+    pivot_local_mm: Sequence[float] = (0.0, 0.0, 0.0),
+) -> np.ndarray:
+    """Rotate board geometry in the stationary fixture frame for display."""
+
+    array = np.asarray(points, dtype=float)
+    if array.ndim != 2 or array.shape[1] != 3:
+        raise ValueError("Preview board points must have shape [N, 3]")
+    pivot = np.asarray(pivot_local_mm, dtype=float)
+    rotation = Rotation.from_euler("Z", float(runtime_yaw_offset_deg), degrees=True).as_matrix()
+    return pivot + (rotation @ (array - pivot).T).T
+
+
+# STL files contain many small triangles whose face normals can make Plotly's
+# default directional light look patchy.  Keep the solids readable while
+# avoiding dark facets that can be mistaken for missing geometry.
+PREVIEW_SOLID_LIGHTING = {
+    "ambient": 0.78,
+    "diffuse": 0.30,
+    "specular": 0.02,
+    "roughness": 1.0,
+    "fresnel": 0.0,
+}
+PREVIEW_SOLID_LIGHT_POSITION = {"x": 0, "y": 0, "z": 1000}
+PREVIEW_TILE_COLORSCALE = (
+    (0.0, "#245b91"),
+    (0.48, "#2a6fbb"),
+    (1.0, "#69a9dc"),
+)
+PREVIEW_DOCK_COLORSCALE = (
+    (0.0, "#b94e16"),
+    (0.48, "#e27024"),
+    (1.0, "#f2a064"),
+)
+
+
+def preview_height_intensity(vertices: np.ndarray) -> np.ndarray:
+    """Return a robust 0-1 height ramp that reveals raised surface detail."""
+
+    z = np.asarray(vertices, dtype=float)[:, 2]
+    lower, upper = np.percentile(z, (2.0, 98.0))
+    if not np.isfinite(lower) or not np.isfinite(upper) or upper - lower < 1e-9:
+        return np.full(z.shape, 0.5, dtype=float)
+    return np.clip((z - lower) / (upper - lower), 0.0, 1.0)
+
+
+def write_plan_preview(
+    path: Path,
+    tile: dict[str, Any],
+    board_dir: Path,
+    dock_design: dict[str, Any],
+    samples: list[BoardSample],
+    runtime_yaw_offset_deg: float = 0.0,
+) -> None:
     try:
         import plotly.graph_objects as go
     except ImportError as exc:
         raise RuntimeError("plotly is required for the interactive plan preview") from exc
     tile_path = board_dir / str(tile["stl"])
     vertices, faces = load_preview_mesh_arrays(tile_path, 28000)
+    vertices = rotate_board_points_for_fixed_preview(vertices, runtime_yaw_offset_deg)
     figure = go.Figure()
     figure.add_trace(
         go.Mesh3d(
             x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
             i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-            color="#2a6fbb", opacity=0.43, name="printed tile",
-            hoverinfo="skip",
+            intensity=preview_height_intensity(vertices), intensitymode="vertex",
+            colorscale=PREVIEW_TILE_COLORSCALE, cmin=0.0, cmax=1.0, showscale=False,
+            opacity=1.0, name="solid printed tile",
+            flatshading=False, hoverinfo="skip",
+            lighting=PREVIEW_SOLID_LIGHTING,
+            lightposition=PREVIEW_SOLID_LIGHT_POSITION,
         )
     )
     dock_path = Path(str(dock_design.get("stl", "")))
@@ -1993,23 +2868,30 @@ def write_plan_preview(path: Path, tile: dict[str, Any], board_dir: Path, dock_d
             go.Mesh3d(
                 x=dock_vertices[:, 0], y=dock_vertices[:, 1], z=dock_vertices[:, 2],
                 i=dock_faces[:, 0], j=dock_faces[:, 1], k=dock_faces[:, 2],
-                color="#e27024", opacity=0.87, name="calibration dock", hoverinfo="skip",
+                intensity=preview_height_intensity(dock_vertices), intensitymode="vertex",
+                colorscale=PREVIEW_DOCK_COLORSCALE, cmin=0.0, cmax=1.0, showscale=False,
+                opacity=1.0, name="solid calibration dock", flatshading=False, hoverinfo="skip",
+                lighting=PREVIEW_SOLID_LIGHTING,
+                lightposition=PREVIEW_SOLID_LIGHT_POSITION,
             )
         )
     categories = sorted({sample.category for sample in samples})
     palette = {"flat": "#1ca6a6", "edge": "#e65640", "curvature": "#7856e8", "multi_touch": "#f0a529", "small_feature": "#dd5fa3"}
     for category in categories:
         group = [sample for sample in samples if sample.category == category]
+        display_points = rotate_board_points_for_fixed_preview(
+            [sample.local_contact_mm for sample in group], runtime_yaw_offset_deg
+        )
         figure.add_trace(
             go.Scatter3d(
-                x=[sample.local_contact_mm[0] for sample in group],
-                y=[sample.local_contact_mm[1] for sample in group],
-                z=[sample.local_contact_mm[2] for sample in group],
+                x=display_points[:, 0],
+                y=display_points[:, 1],
+                z=display_points[:, 2],
                 mode="markers",
                 name="{} planned contacts ({})".format(category, len(group)),
                 marker={"size": 4.8, "color": palette.get(category, "#ffffff"), "line": {"color": "#ffffff", "width": 0.6}},
                 customdata=[[sample.sample_id, sample.source_seed_site_id, sample.post_contact_depth_mm, sample.tilt_x_deg, sample.tilt_y_deg] for sample in group],
-                hovertemplate="%{customdata[0]}<br>seed=%{customdata[1]}<br>post-contact depth=%{customdata[2]:.2f} mm<br>tilt X/Y=%{customdata[3]:+.1f}/%{customdata[4]:+.1f} deg<br>tile local X/Y/Z=%{x:.2f}/%{y:.2f}/%{z:.2f} mm<extra></extra>",
+                hovertemplate="%{customdata[0]}<br>seed=%{customdata[1]}<br>post-contact depth=%{customdata[2]:.2f} mm<br>tilt X/Y=%{customdata[3]:+.1f}/%{customdata[4]:+.1f} deg<br>fixed fixture X/Y/Z=%{x:.2f}/%{y:.2f}/%{z:.2f} mm<extra></extra>",
             )
         )
     for region_id in sorted({sample.region_id for sample in samples}):
@@ -2022,30 +2904,36 @@ def write_plan_preview(path: Path, tile: dict[str, Any], board_dir: Path, dock_d
         anchors = list(unique_by_xy.values())
         if len(anchors) == len([sample for sample in samples if sample.region_id == region_id]):
             continue
+        display_anchors = rotate_board_points_for_fixed_preview(
+            [sample.local_contact_mm for sample in anchors], runtime_yaw_offset_deg
+        )
         figure.add_trace(
             go.Scatter3d(
-                x=[sample.local_contact_mm[0] for sample in anchors],
-                y=[sample.local_contact_mm[1] for sample in anchors],
-                z=[sample.local_contact_mm[2] for sample in anchors],
+                x=display_anchors[:, 0],
+                y=display_anchors[:, 1],
+                z=display_anchors[:, 2],
                 mode="markers",
                 name="{} distinct XY anchors ({})".format(region_id, len(anchors)),
                 marker={"size": 7.5, "color": "#172033", "symbol": "square-open", "line": {"color": "#ffffff", "width": 1.1}},
                 customdata=[[sample.source_seed_site_id, sample.replicate] for sample in anchors],
-                hovertemplate="{} spatial anchor<br>nearest CSV seed=%{{customdata[0]}}<br>tile local X/Y/Z=%{{x:.2f}}/%{{y:.2f}}/%{{z:.2f}} mm<extra></extra>".format(region_id),
+                hovertemplate="{} spatial anchor<br>nearest CSV seed=%{{customdata[0]}}<br>fixed fixture X/Y/Z=%{{x:.2f}}/%{{y:.2f}}/%{{z:.2f}} mm<extra></extra>".format(region_id),
             )
         )
     if "reference_pad" in dock_design:
         reference = dict(dock_design["reference_pad"])["centre_local_mm"]
         figure.add_trace(go.Scatter3d(x=[reference[0]], y=[reference[1]], z=[reference[2]], mode="markers", name="optional reference pad", marker={"size": 7, "color": "#f6d743", "symbol": "diamond"}, hovertemplate="Optional reference pad<extra></extra>"))
     figure.update_layout(
-        title="{}: contact plan in tile-local coordinates".format(str(tile["tile_id"])),
+        title=(
+            "{}: contact plan in fixed fixture coordinates; board rotation {:+.0f} deg about centre"
+            .format(str(tile["tile_id"]), float(runtime_yaw_offset_deg))
+        ),
         paper_bgcolor="#f7f9fc",
         margin={"l": 0, "r": 0, "t": 48, "b": 0},
         legend={"orientation": "h", "y": 1.02, "x": 0},
         scene={
-            "xaxis": {"title": "tile local X (mm)"},
-            "yaxis": {"title": "tile local Y (mm)"},
-            "zaxis": {"title": "tile local Z (mm)"},
+            "xaxis": {"title": "fixed fixture X (mm)"},
+            "yaxis": {"title": "fixed fixture Y (mm)"},
+            "zaxis": {"title": "fixed fixture Z (mm)"},
             "aspectmode": "data",
             "camera": {"eye": {"x": 1.45, "y": -1.62, "z": 1.15}},
         },
@@ -2054,9 +2942,23 @@ def write_plan_preview(path: Path, tile: dict[str, Any], board_dir: Path, dock_d
 
 
 def base_to_tile_local(fixture: FixtureTransform, base_xyz_mm: Sequence[float]) -> np.ndarray:
-    """Invert the dock-defined rigid transform for a local preview."""
+    """Invert the centre-pivoted board transform."""
 
-    return np.asarray(fixture.dock_tcp_local_mm, dtype=float) + fixture.tile_to_base.T @ (
+    pivot = np.asarray(fixture.board_pivot_local_mm, dtype=float)
+    return pivot + fixture.tile_to_base.T @ (
+        np.asarray(base_xyz_mm, dtype=float) - fixture.board_pivot_base()
+    )
+
+
+def base_to_fixed_fixture_local(fixture: FixtureTransform, base_xyz_mm: Sequence[float]) -> np.ndarray:
+    """Map CR3 base coordinates into the stationary dock/design frame."""
+
+    fixed_rotation = (
+        fixture.fixed_rotation()
+        if hasattr(fixture, "fixed_rotation")
+        else np.asarray(fixture.tile_to_base, dtype=float)
+    )
+    return np.asarray(fixture.dock_tcp_local_mm, dtype=float) + fixed_rotation.T @ (
         np.asarray(base_xyz_mm, dtype=float) - np.asarray(fixture.dock_tcp[:3], dtype=float)
     )
 
@@ -2080,12 +2982,17 @@ def write_ik_candidate_preview(
 
     tile_path = board_dir / str(tile["stl"])
     vertices, faces = load_preview_mesh_arrays(tile_path, 28000)
+    vertices = rotate_board_points_for_fixed_preview(vertices, args.board_yaw_offset_deg)
     figure = go.Figure()
     figure.add_trace(
         go.Mesh3d(
             x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
             i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-            color="#2a6fbb", opacity=0.38, name="printed tile", hoverinfo="skip",
+            intensity=preview_height_intensity(vertices), intensitymode="vertex",
+            colorscale=PREVIEW_TILE_COLORSCALE, cmin=0.0, cmax=1.0, showscale=False,
+            opacity=1.0, name="solid printed tile", flatshading=False, hoverinfo="skip",
+            lighting=PREVIEW_SOLID_LIGHTING,
+            lightposition=PREVIEW_SOLID_LIGHT_POSITION,
         )
     )
     dock_path = Path(str(dock_design.get("stl", "")))
@@ -2095,7 +3002,11 @@ def write_ik_candidate_preview(
             go.Mesh3d(
                 x=dock_vertices[:, 0], y=dock_vertices[:, 1], z=dock_vertices[:, 2],
                 i=dock_faces[:, 0], j=dock_faces[:, 1], k=dock_faces[:, 2],
-                color="#e27024", opacity=0.82, name="calibration dock", hoverinfo="skip",
+                intensity=preview_height_intensity(dock_vertices), intensitymode="vertex",
+                colorscale=PREVIEW_DOCK_COLORSCALE, cmin=0.0, cmax=1.0, showscale=False,
+                opacity=1.0, name="solid calibration dock", flatshading=False, hoverinfo="skip",
+                lighting=PREVIEW_SOLID_LIGHTING,
+                lightposition=PREVIEW_SOLID_LIGHT_POSITION,
             )
         )
 
@@ -2104,11 +3015,20 @@ def write_ik_candidate_preview(
     palette = {"flat": "#27a7a7", "edge": "#ea704b", "curvature": "#8062e5", "multi_touch": "#eead32", "small_feature": "#db6097"}
     for category in sorted({sample.category for sample in requested_samples}):
         group = [sample for sample in requested_samples if sample.category == category]
+        group_points = rotate_board_points_for_fixed_preview(
+            [
+                (
+                    sample.local_contact_mm[0],
+                    sample.local_contact_mm[1],
+                    sample.local_contact_mm[2] + board_surface_correction_mm(sample, args),
+                )
+                for sample in group
+            ],
+            args.board_yaw_offset_deg,
+        )
         figure.add_trace(
             go.Scatter3d(
-                x=[sample.local_contact_mm[0] for sample in group],
-                y=[sample.local_contact_mm[1] for sample in group],
-                z=[sample.local_contact_mm[2] + board_surface_correction_mm(sample, args) for sample in group],
+                x=group_points[:, 0], y=group_points[:, 1], z=group_points[:, 2],
                 mode="markers", name="planned {} ({})".format(category, len(group)),
                 marker={"size": 3.4, "color": palette.get(category, "#ffffff"), "opacity": 0.88},
                 customdata=[[sample.sample_id, sample.source_seed_site_id, sample.post_contact_depth_mm] for sample in group],
@@ -2116,11 +3036,20 @@ def write_ik_candidate_preview(
             )
         )
     if reserve:
+        reserve_points = rotate_board_points_for_fixed_preview(
+            [
+                (
+                    sample.local_contact_mm[0],
+                    sample.local_contact_mm[1],
+                    sample.local_contact_mm[2] + board_surface_correction_mm(sample, args),
+                )
+                for sample in reserve
+            ],
+            args.board_yaw_offset_deg,
+        )
         figure.add_trace(
             go.Scatter3d(
-                x=[sample.local_contact_mm[0] for sample in reserve],
-                y=[sample.local_contact_mm[1] for sample in reserve],
-                z=[sample.local_contact_mm[2] + board_surface_correction_mm(sample, args) for sample in reserve],
+                x=reserve_points[:, 0], y=reserve_points[:, 1], z=reserve_points[:, 2],
                 mode="markers", name="IK replacement reserve ({})".format(len(reserve)),
                 marker={"size": 2.6, "color": "#91d36d", "opacity": 0.43},
                 customdata=[[sample.sample_id, sample.region_id] for sample in reserve],
@@ -2148,7 +3077,9 @@ def write_ik_candidate_preview(
             route["site_high_tcp"],
             dock_high,
         )
-        local_route = np.asarray([base_to_tile_local(fixture, pose[:3]) for pose in route_poses], dtype=float)
+        local_route = np.asarray(
+            [base_to_fixed_fixture_local(fixture, pose[:3]) for pose in route_poses], dtype=float
+        )
         figure.add_trace(
             go.Scatter3d(
                 x=local_route[:, 0], y=local_route[:, 1], z=local_route[:, 2],
@@ -2167,9 +3098,9 @@ def write_ik_candidate_preview(
         margin={"l": 0, "r": 0, "t": 54, "b": 0},
         legend={"orientation": "h", "y": 1.02, "x": 0},
         scene={
-            "xaxis": {"title": "tile local X (mm)"},
-            "yaxis": {"title": "tile local Y (mm)"},
-            "zaxis": {"title": "tile local Z (mm)"},
+            "xaxis": {"title": "fixed fixture X (mm)"},
+            "yaxis": {"title": "fixed fixture Y (mm)"},
+            "zaxis": {"title": "fixed fixture Z (mm)"},
             "aspectmode": "data",
             "camera": {"eye": {"x": 1.45, "y": -1.62, "z": 1.15}},
         },
@@ -2200,13 +3131,23 @@ def write_motion_route_preview(
 
     tile_path = board_dir / str(tile["stl"])
     vertices, faces = load_preview_mesh_arrays(tile_path, 28000)
+    vertices = rotate_board_points_for_fixed_preview(
+        vertices,
+        fixture.runtime_yaw_offset_deg,
+        fixture.board_pivot_local_mm,
+    )
 
     figure = go.Figure()
     figure.add_trace(
         go.Mesh3d(
             x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
             i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-            color="#2a6fbb", opacity=0.34, name="printed tile", hoverinfo="skip", showlegend=False,
+            intensity=preview_height_intensity(vertices), intensitymode="vertex",
+            colorscale=PREVIEW_TILE_COLORSCALE, cmin=0.0, cmax=1.0, showscale=False,
+            opacity=1.0, name="solid printed tile", flatshading=False,
+            hoverinfo="skip", showlegend=True,
+            lighting=PREVIEW_SOLID_LIGHTING,
+            lightposition=PREVIEW_SOLID_LIGHT_POSITION,
         )
     )
     dock_path = Path(str(dock_design.get("stl", "")))
@@ -2216,7 +3157,12 @@ def write_motion_route_preview(
             go.Mesh3d(
                 x=dock_vertices[:, 0], y=dock_vertices[:, 1], z=dock_vertices[:, 2],
                 i=dock_faces[:, 0], j=dock_faces[:, 1], k=dock_faces[:, 2],
-                color="#e27024", opacity=0.82, name="calibration dock", hoverinfo="skip", showlegend=False,
+                intensity=preview_height_intensity(dock_vertices), intensitymode="vertex",
+                colorscale=PREVIEW_DOCK_COLORSCALE, cmin=0.0, cmax=1.0, showscale=False,
+                opacity=1.0, name="solid calibration dock", flatshading=False,
+                hoverinfo="skip", showlegend=True,
+                lighting=PREVIEW_SOLID_LIGHTING,
+                lightposition=PREVIEW_SOLID_LIGHT_POSITION,
             )
         )
 
@@ -2232,7 +3178,9 @@ def write_motion_route_preview(
         category: str = "Transit",
         dash: str = "solid",
     ) -> None:
-        local = np.asarray([base_to_tile_local(fixture, pose[:3]) for pose in poses], dtype=float)
+        local = np.asarray(
+            [base_to_fixed_fixture_local(fixture, pose[:3]) for pose in poses], dtype=float
+        )
         customdata = [
             "{}<br>{}<br>{}: ({:.1f}, {:.1f}, {:.1f}) mm".format(name, label, tcp_frame_label, pose[0], pose[1], pose[2])
             for label, pose in zip(labels, poses)
@@ -2243,15 +3191,15 @@ def write_motion_route_preview(
                 legendgroup=category, showlegend=category not in shown_legend_categories,
                 line={"color": color, "width": width, "dash": dash}, marker={"color": color, "size": 4.8},
                 customdata=customdata,
-                hovertemplate="%{customdata}<br>tile local: (%{x:.1f}, %{y:.1f}, %{z:.1f}) mm<extra></extra>",
+                hovertemplate="%{customdata}<br>fixed fixture: (%{x:.1f}, %{y:.1f}, %{z:.1f}) mm<extra></extra>",
             )
         )
         shown_legend_categories.add(category)
 
     seated = fixture.dock_tcp
     dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-    dock_exit = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
-    dock_high = fixture.pose((dock_local[0], dock_local[1], float(args.safe_height_mm)))
+    dock_exit = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+    dock_high = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], float(args.safe_height_mm)))
     if not args.skip_reference_pad_check:
         reference = reference_route(fixture, dock_design, args)
         reference_outbound = dict(reference["outbound"])
@@ -2314,7 +3262,7 @@ def write_motion_route_preview(
             dash="dash",
         )
         previous_site_high = route["site_high_tcp"]
-        contact_local = base_to_tile_local(fixture, route["contact_tcp"][:3])
+        contact_local = base_to_fixed_fixture_local(fixture, route["contact_tcp"][:3])
         angles = np.linspace(0.0, 2.0 * math.pi, 49)
         figure.add_trace(
             go.Scatter3d(
@@ -2325,7 +3273,7 @@ def write_motion_route_preview(
                 legendgroup="Tip footprint", showlegend=index == 0,
                 line={"color": "#7c3aed", "width": 3},
                 customdata=[sample.sample_id] * len(angles),
-                hovertemplate="%{customdata}<br>Tip footprint<br>tile local: (%{x:.1f}, %{y:.1f}, %{z:.1f}) mm<extra></extra>",
+                hovertemplate="%{customdata}<br>Tip footprint<br>fixed fixture: (%{x:.1f}, %{y:.1f}, %{z:.1f}) mm<extra></extra>",
             )
         )
 
@@ -2337,6 +3285,14 @@ def write_motion_route_preview(
             hovertemplate=("Design dock datum (not measured)" if args.fixture_local_preview else "Saved seated Tool(2) TCP") + "<extra></extra>",
         )
     )
+    pivot = np.asarray(fixture.board_pivot_local_mm, dtype=float)
+    figure.add_trace(
+        go.Scatter3d(
+            x=[pivot[0]], y=[pivot[1]], z=[pivot[2]], mode="markers", name="board rotation centre",
+            marker={"color": "#facc15", "size": 8, "symbol": "diamond", "line": {"color": "#111827", "width": 1}},
+            hovertemplate="Runtime board rotation centre (0, 0)<extra></extra>",
+        )
+    )
     title_suffix = "first {} / {} samples".format(len(shown_samples), len(samples)) if len(samples) > len(shown_samples) else "{} samples".format(len(samples))
     route_mode = "direct-to-site" if args.skip_reference_pad_check else "reference-pad check enabled"
     if args.continuous_board_transit:
@@ -2345,7 +3301,8 @@ def write_motion_route_preview(
     figure.update_layout(
         title={
             "text": "{} · TCP route preview<br><sup>{} · {}</sup><br><sup>{} · no CR3 commands sent</sup>".format(
-                tile["tile_id"], preview_status, title_suffix, route_mode,
+                tile["tile_id"], preview_status, title_suffix,
+                "{} · board offset {:+.0f} deg about centre".format(route_mode, fixture.runtime_yaw_offset_deg),
             ),
             "x": 0.02, "y": 0.98, "xanchor": "left", "yanchor": "top", "font": {"size": 20},
         },
@@ -2353,9 +3310,9 @@ def write_motion_route_preview(
         margin={"l": 0, "r": 0, "t": 126, "b": 60},
         legend={"orientation": "h", "y": -0.06, "x": 0.5, "xanchor": "center", "groupclick": "togglegroup", "font": {"size": 12}},
         scene={
-            "xaxis": {"title": "tile local X (mm)"},
-            "yaxis": {"title": "tile local Y (mm)"},
-            "zaxis": {"title": "tile local Z (mm)"},
+            "xaxis": {"title": "fixed fixture X (mm)"},
+            "yaxis": {"title": "fixed fixture Y (mm)"},
+            "zaxis": {"title": "fixed fixture Z (mm)"},
             "aspectmode": "data",
             "camera": {"eye": {"x": 1.45, "y": -1.62, "z": 1.15}},
         },
@@ -2368,7 +3325,11 @@ def prepare_run_dir(args: argparse.Namespace) -> Path:
         path = args.output_dir
     else:
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        path = DEFAULT_RUN_ROOT / "{}_{}_{}".format(args.tile, sampling_label(args), stamp)
+        if bool(getattr(args, "recover_low_pose_to_dock", False)):
+            label = "low_pose_recovery"
+        else:
+            label = "runtime_height_calibration" if bool(getattr(args, "calibrate_runtime_height", False)) else sampling_label(args)
+        path = DEFAULT_RUN_ROOT / "{}_{}_{}".format(args.tile, label, stamp)
     path.mkdir(parents=True, exist_ok=False)
     return path.resolve()
 
@@ -2769,41 +3730,72 @@ def search_visual_contact(
         return record
     visual_tcp = finite_pose(first_hit["actual_tcp"], "visual-contact TCP")
     record["coarse_contact_depth_from_approach_mm"] = float(first_hit["search_depth_mm"])
+    bracket_mode = "coarse"
     if getattr(args, "height_measurement", False):
         if last_no_contact_tcp is None:
             record.update({"status": "measurement_unusable", "reason": "No observed unloaded endpoint before contact; no height bracket can be inferred."})
             return record
-        try:
-            refinement = refine_visual_contact_bracket(
-                robot, camera, preprocessor, args, output_dir, label, approach_tcp,
-                press_axis, baseline, threshold, last_no_contact_tcp, visual_tcp, camera_time,
-            )
-        except Exception as exc:
-            record["contact_refinement"] = getattr(exc, "refinement_record", {"status": "failed"})
-            record["status"] = "failed"
-            setattr(exc, "contact_search_record", record)
-            raise
-        record["contact_refinement"] = refinement
-        record["frames"].extend(refinement["frames"])
-        record["motion"].extend(refinement["motion"])
-        if refinement["status"] != "refined":
-            record.update({"status": "measurement_unusable", "reason": refinement.get("reason", "Fine contact bracket could not be verified")})
-            return record
-        visual_tcp = finite_pose(refinement["contact_tcp"], "refined visual-contact TCP")
-        last_no_contact_tcp = refinement["no_contact_tcp"]
-        camera_time = float(refinement["camera_time"])
+        if bool(getattr(args, "calibrate_runtime_height", False)):
+            # The persistent board datum is repeated at every known region.
+            # Accept the already-confirmed 0.5 mm coarse interval instead of
+            # probing several more frames inside a deformed optical field.
+            # This protects the run from a single glare/Hough dropout without
+            # synthesising markers or moving deeper than the first contact.
+            coarse_no_contact = finite_pose(last_no_contact_tcp, "coarse no-contact TCP")
+            coarse_width = float(np.dot(np.asarray(visual_tcp[:3]) - np.asarray(coarse_no_contact[:3]), press_axis))
+            if coarse_width <= 0.0 or coarse_width > float(args.step_mm) + 1e-6:
+                record.update({
+                    "status": "measurement_unusable",
+                    "reason": "Stable coarse first-contact interval is invalid for runtime height calibration.",
+                })
+                return record
+            refinement = {
+                "status": "coarse_accepted",
+                "reason": "Repeated runtime datum uses the stable coarse visual-contact interval; fine refinement is intentionally skipped.",
+                "no_contact_tcp": list_pose(coarse_no_contact),
+                "contact_tcp": list_pose(visual_tcp),
+                "actual_bracket_width_mm": coarse_width,
+                "bracket_mode": "coarse",
+                "frames": [],
+                "motion": [],
+                "camera_time": float(camera_time),
+            }
+            record["contact_refinement"] = refinement
+            bracket_mode = "coarse"
+        else:
+            try:
+                refinement = refine_visual_contact_bracket(
+                    robot, camera, preprocessor, args, output_dir, label, approach_tcp,
+                    press_axis, baseline, threshold, last_no_contact_tcp, visual_tcp, camera_time,
+                )
+            except Exception as exc:
+                record["contact_refinement"] = getattr(exc, "refinement_record", {"status": "failed"})
+                record["status"] = "failed"
+                setattr(exc, "contact_search_record", record)
+                raise
+            record["contact_refinement"] = refinement
+            record["frames"].extend(refinement["frames"])
+            record["motion"].extend(refinement["motion"])
+            if refinement["status"] != "refined":
+                record.update({"status": "measurement_unusable", "reason": refinement.get("reason", "Fine contact bracket could not be verified")})
+                return record
+            visual_tcp = finite_pose(refinement["contact_tcp"], "refined visual-contact TCP")
+            last_no_contact_tcp = refinement["no_contact_tcp"]
+            camera_time = float(refinement["camera_time"])
+            bracket_mode = "refined"
     record["first_contact_bracket"] = (
         {
             "no_contact_tcp": last_no_contact_tcp,
             "contact_tcp": list_pose(visual_tcp),
             "detection": "visual_marker_threshold",
+            "bracket_mode": bracket_mode,
             "note": "Brackets the visual detection threshold, not guaranteed physical zero contact.",
         }
         if last_no_contact_tcp is not None else None
     )
     visual_depth = float(np.dot(np.asarray(visual_tcp[:3]) - np.asarray(approach_tcp[:3]), press_axis))
     record["commanded_contact_depth_from_approach_mm"] = float(first_hit["search_depth_mm"])
-    if getattr(args, "height_measurement", False):
+    if getattr(args, "height_measurement", False) and refinement["status"] == "refined":
         record["commanded_contact_depth_from_approach_mm"] = float(np.dot(np.asarray(refinement["motion"][-1]["target_tcp"][:3]) - np.asarray(approach_tcp[:3]), press_axis))
     capture_depth = visual_depth + float(post_contact_depth_mm)
     if capture_depth > planned_clearance + maximum_below_nominal + 1e-6:
@@ -2846,15 +3838,69 @@ def search_visual_contact(
 def execute_route(robot: DobotCR3LiveClient, route: Iterable[tuple[str, tuple[float, float, float, float, float, float]]], label_prefix: str, args: argparse.Namespace) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for label, pose in route:
-        records.append(move_and_verify(robot, "{} {}".format(label_prefix, label), pose, args))
+        try:
+            records.append(move_and_verify(robot, "{} {}".format(label_prefix, label), pose, args))
+        except Exception as exc:
+            # A caller may skip only a no-MovL IK refusal. Preserve the
+            # verified prefix so it never assumes an unreached target was safe.
+            try:
+                setattr(exc, "route_records", records)
+                setattr(exc, "route_failed_label", label)
+                setattr(exc, "route_failed_target_tcp", list_pose(pose))
+            except Exception:
+                pass
+            raise
     return records
+
+
+def _exception_messages(exc: BaseException) -> list[str]:
+    """Return the exception/cause chain without losing wrapped camera errors."""
+
+    messages: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append("{}: {}".format(type(current).__name__, current))
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return messages
+
+
+def safe_sample_failure_kind(exc: BaseException) -> str | None:
+    """Classify only failures for which collection can prove a safe skip.
+
+    A controller-side IK refusal explicitly states that no ``MovL`` was sent.
+    Camera/preprocessing failures occur after a previously verified robot move;
+    the caller must still finish a verified high-route recovery before it
+    continues. Every other error remains a hard stop because the CR3 state
+    could be unknown.
+    """
+
+    messages = "\n".join(_exception_messages(exc))
+    if "inverse-kinematics solution; MovL was not sent" in messages:
+        return "ik_preflight_rejected"
+    tactile_tokens = (
+        "Timed out waiting for a GelSight frame",
+        "Could not read frame from camera source",
+        "TacTip preprocessing rejected",
+        "TacTip preprocessing outputs are incomplete",
+        "Could not load matching preprocessing outputs",
+        "Marker-safe preprocessing ROI is unexpectedly small",
+        "Could not find enough TacTip marker corners",
+        "TacTip optical flow",
+        "Too few stable TacTip marker tracks",
+        "preprocessing frame geometry changed",
+    )
+    if any(token in messages for token in tactile_tokens):
+        return "tactile_capture_error"
+    return None
 
 
 def write_collection_csv(path: Path, records: list[dict[str, Any]]) -> None:
     fields = [
         "sample_index", "sample_id", "seed_site", "region_id", "category", "stimulus", "status", "post_contact_depth_mm", "tilt_x_deg", "tilt_y_deg",
         "local_x_mm", "local_y_mm", "expected_surface_z_mm", "jitter_x_mm", "jitter_y_mm",
-        "visual_contact_depth_from_approach_mm", "delta_from_planned_zero_along_press_mm", "capture_mean", "capture_p95", "raw_image", "model_input",
+        "visual_contact_depth_from_approach_mm", "delta_from_planned_zero_along_press_mm", "capture_mean", "capture_p95", "raw_image", "model_input", "failure_kind", "failure_reason",
         "visual_contact_tcp_x", "visual_contact_tcp_y", "visual_contact_tcp_z", "visual_contact_tcp_Rx", "visual_contact_tcp_Ry", "visual_contact_tcp_Rz",
         "actual_capture_tcp_x", "actual_capture_tcp_y", "actual_capture_tcp_z", "actual_capture_tcp_Rx", "actual_capture_tcp_Ry", "actual_capture_tcp_Rz",
     ]
@@ -2887,6 +3933,8 @@ def write_collection_csv(path: Path, records: list[dict[str, Any]]) -> None:
                 "capture_p95": dict(capture.get("marker_motion", {})).get("p95", ""),
                 "raw_image": capture.get("raw_image", ""),
                 "model_input": capture.get("model_input", ""),
+                "failure_kind": run.get("failure_kind", ""),
+                "failure_reason": run.get("reason", ""),
             }
             for prefix, values in (("visual_contact_tcp", run.get("visual_contact_tcp", ())), ("actual_capture_tcp", run.get("actual_capture_tcp", ()))):
                 if isinstance(values, (list, tuple)) and len(values) == 6:
@@ -2909,7 +3957,10 @@ def build_report(path: Path, payload: dict[str, Any], max_cards: int) -> None:
             images += '<figure><figcaption>Raw capture</figcaption><img src="{}"></figure>'.format(raw)
         if model_input:
             images += '<figure><figcaption>Shared GAN model input</figcaption><img src="{}"></figure>'.format(model_input)
-        cards.append("<article><h2>{}</h2><p><b>{}</b><br>{}</p><div class=\"images\">{}</div></article>".format(html.escape(str(sample["sample_id"])), html.escape(str(result.get("status", ""))), html.escape(body), images))
+        reason = str(result.get("reason", ""))
+        if reason:
+            body += "<br><small>Reason: {}</small>".format(html.escape(reason))
+        cards.append("<article><h2>{}</h2><p><b>{}</b><br>{}</p><div class=\"images\">{}</div></article>".format(html.escape(str(sample["sample_id"])), html.escape(str(result.get("status", ""))), body, images))
     captured = sum(1 for item in payload.get("samples", []) if dict(item.get("result", {})).get("status") == "captured")
     page = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Coverage-board CR3 collection</title><style>
 body{{margin:0;background:#111722;color:#eef3f8;font-family:Arial,sans-serif}}header{{padding:20px 28px;background:#182232}}h1{{margin:0;font-size:23px}}.summary{{padding:14px 28px;color:#b7c5d6}}.grid{{padding:0 28px 28px;display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px}}article{{background:#182232;border:1px solid #33475f;border-radius:7px;padding:13px}}article h2{{margin:0;font-size:16px}}.images{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.images figure{{margin:0;background:#0d141e;padding:6px}}.images figcaption{{font-size:11px;color:#cbd7e5;margin-bottom:5px}}.images img{{width:100%;display:block;background:#000;image-rendering:pixelated}}
@@ -2923,12 +3974,29 @@ body{{margin:0;background:#111722;color:#eef3f8;font-family:Arial,sans-serif}}he
     path.write_text(page, encoding="utf-8")
 
 
-def write_run_readme(path: Path, args: argparse.Namespace, fixture_profile: Path | None, tile_size_mm: Sequence[float]) -> None:
+def write_run_readme(
+    path: Path,
+    args: argparse.Namespace,
+    fixture_profile: Path | None,
+    tile_size_mm: Sequence[float],
+    board_orientation: dict[str, Any] | None,
+) -> None:
     depth_policy = (
         "uniformly distributed within each seed's CSV-safe intersection of the requested range"
         if args.respect_csv_depth_limits
         else "uniformly distributed across the global requested range (CSV limits ignored)"
     )
+    if board_orientation is None:
+        orientation_text = "not available because no measured fixture profile was supplied"
+    else:
+        orientation_text = (
+            "saved profile yaw `{:+.3f} deg` + runtime offset `{:+.3f} deg` = effective "
+            "`{:+.3f} deg`; the runtime offset pivots about the fixed tile centre while the dock stays fixed"
+        ).format(
+            float(board_orientation["saved_profile_yaw_deg"]),
+            float(board_orientation["runtime_yaw_offset_deg"]),
+            float(board_orientation["effective_yaw_deg"]),
+        )
     text = """# CR3 coverage-board sampling run
 
 This directory contains a deterministic plan for one {} x {} mm board tile. It
@@ -2955,6 +4023,9 @@ targeted local repeats.
   IK-filtered replacement plan is specifically needed. Either mode saves an
   `ik_route_filter.json` record.
 - On a missing contact it returns by the high route and stops by default.
+  ``--continue-on-safe-sample-error`` additionally skips only no-MovL IK
+  rejections and camera/preprocessing failures that can be recovered to a
+  verified high route. It never masks motion-feedback or RobotMode faults.
 
 ## Current run
 
@@ -2966,11 +4037,14 @@ targeted local repeats.
 - Final indentation after visual contact: {} (`{:.1f}-{:.1f} mm` requested)
 - Visual-contact search margin below nominal surface: `{:.1f} mm` (also capped by the hard depth limit)
 - Board surface height correction (tile +Z): `{:+.3f} mm`; dock and safe transit height are unchanged.
+- Board orientation: {}. `--board-yaw-offset-deg` affects only this run's planned board coordinates and tilt axes; it does not rewrite the fixture profile.
 - Inter-sample route: `{}`
 - Missing-contact policy: `{}`
 - Fixture profile: `{}`
-- `planned_sampling_points_3d.html` is in tile-local coordinates; it is the
-  mechanically fixed frame defined by the printed dock.
+- `planned_sampling_points_3d.html` and `full_tcp_motion_safety_preview.html`
+  use the stationary fixture/dock frame. A runtime board-yaw offset visibly
+  rotates the solid tile, contact points and board-side route around `(0, 0)`;
+  the orange dock and seated rest TCP do not move.
     """.format(
         "{:.0f}".format(float(tile_size_mm[0])),
         "{:.0f}".format(float(tile_size_mm[1])),
@@ -2984,8 +4058,15 @@ targeted local repeats.
         float(args.max_post_contact_depth_mm),
         float(args.contact_search_margin_mm),
         float(args.board_height_offset_mm),
+        orientation_text,
         "continuous site-high transit" if args.continuous_board_transit else "dock-high / dock-exit after every sample",
-        "record, retract high, and continue" if args.continue_on_no_contact else "record, retract high, and stop",
+        (
+            "record, retract high, and continue; also skip only recoverable IK/camera errors"
+            if args.continue_on_no_contact and args.continue_on_safe_sample_error
+            else "record, retract high, and continue"
+            if args.continue_on_no_contact
+            else "record, retract high, and stop"
+        ),
         fixture_profile or "not supplied (offline plan only)",
     )
     if args.skip_previews:
@@ -3255,7 +4336,7 @@ def select_ik_reachable_samples(
         flush=True,
     )
     dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-    dock_high = fixture.pose((dock_local[0], dock_local[1], float(args.safe_height_mm)))
+    dock_high = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], float(args.safe_height_mm)))
     dock_high_joints, shared_checks = check_ik_sequence(
         robot,
         (("dock_high", dock_high),),
@@ -3445,7 +4526,7 @@ def run_ik_preflight(
             return 2
 
         dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-        dock_exit = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+        dock_exit = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
         dock_exit_joints, dock_exit_check = check_ik_target(robot, "dock_exit", dock_exit, args, joints)
         payload["checks"].append(dock_exit_check)
         if dock_exit_joints is None:
@@ -3528,8 +4609,8 @@ def run_reseat_dock(args: argparse.Namespace, output_dir: Path, fixture: Fixture
         robot.require_motion_ready()
         _joints, current_pose, raw_joints, raw_pose = robot.read_state()
         dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-        dock_exit = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
-        dock_high = fixture.pose((dock_local[0], dock_local[1], float(args.safe_height_mm)))
+        dock_exit = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+        dock_high = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], float(args.safe_height_mm)))
         dock_error = position_error_mm(fixture.dock_tcp, current_pose)
         exit_error = position_error_mm(dock_exit, current_pose)
         high_error = position_error_mm(dock_high, current_pose)
@@ -3681,6 +4762,161 @@ def run_recover_reference_to_dock(
         robot.close()
 
 
+def low_pose_recovery_route(
+    fixture: FixtureTransform,
+    current_pose: Sequence[float],
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], tuple[tuple[str, tuple[float, float, float, float, float, float]], ...]]:
+    """Build a strictly upward-then-high recovery route from a known low pose."""
+
+    actual = finite_pose(current_pose, "current low Tool TCP")
+    fixed_local_from_base = globals().get("base_to_fixed_fixture_local", base_to_tile_local)
+    current_local = fixed_local_from_base(fixture, actual[:3])
+    dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
+    local_xy_distance = float(np.linalg.norm(current_local[:2] - dock_local[:2]))
+    orientation_error = rotation_error_deg(fixture.dock_tcp, actual)
+    safe_height = float(args.safe_height_mm)
+    if float(current_local[2]) < DEFAULT_LOW_RECOVERY_MIN_LOCAL_Z_MM - 1e-6:
+        raise RuntimeError(
+            "Low-pose recovery refused: current fixture-local Z is {:.3f} mm, below the permitted {:.3f} mm."
+            .format(float(current_local[2]), DEFAULT_LOW_RECOVERY_MIN_LOCAL_Z_MM)
+        )
+    if float(current_local[2]) > safe_height + float(args.motion_position_tolerance_mm):
+        raise RuntimeError(
+            "Low-pose recovery refused: current fixture-local Z is {:.3f} mm, already above safe height {:.3f} mm."
+            .format(float(current_local[2]), safe_height)
+        )
+    if local_xy_distance > DEFAULT_LOW_RECOVERY_MAX_DISTANCE_FROM_DOCK_MM:
+        raise RuntimeError(
+            "Low-pose recovery refused: current XY is {:.3f} mm from the dock, above the {:.3f} mm recovery envelope."
+            .format(local_xy_distance, DEFAULT_LOW_RECOVERY_MAX_DISTANCE_FROM_DOCK_MM)
+        )
+    if orientation_error > DEFAULT_LOW_RECOVERY_MAX_ORIENTATION_ERROR_DEG:
+        raise RuntimeError(
+            "Low-pose recovery refused: Tool orientation differs from the dock by {:.3f} deg (limit {:.3f} deg)."
+            .format(orientation_error, DEFAULT_LOW_RECOVERY_MAX_ORIENTATION_ERROR_DEG)
+        )
+    lift_local = np.asarray((current_local[0], current_local[1], safe_height), dtype=float)
+    dock_high_local = np.asarray((dock_local[0], dock_local[1], safe_height), dtype=float)
+    dock_exit_local = np.asarray(
+        (dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)),
+        dtype=float,
+    )
+    route = (
+        ("vertical_retract_to_safe_height", getattr(fixture, "dock_pose", fixture.pose)(lift_local)),
+        ("dock_high", getattr(fixture, "dock_pose", fixture.pose)(dock_high_local)),
+        ("dock_exit", getattr(fixture, "dock_pose", fixture.pose)(dock_exit_local)),
+        ("reseat_dock", fixture.dock_tcp),
+    )
+    plan = {
+        "current_tcp": list_pose(actual),
+        "current_tile_local_mm": [float(value) for value in current_local],
+        "local_coordinate_frame": "fixed_fixture/dock frame",
+        "distance_from_dock_xy_mm": local_xy_distance,
+        "orientation_error_deg": orientation_error,
+        "safe_height_mm": safe_height,
+        "limits": {
+            "min_local_z_mm": DEFAULT_LOW_RECOVERY_MIN_LOCAL_Z_MM,
+            "max_distance_from_dock_mm": DEFAULT_LOW_RECOVERY_MAX_DISTANCE_FROM_DOCK_MM,
+            "max_orientation_error_deg": DEFAULT_LOW_RECOVERY_MAX_ORIENTATION_ERROR_DEG,
+        },
+        "route": [
+            {
+                "label": label,
+                "target_tcp": list_pose(target),
+                "target_tile_local_mm": [
+                    float(value) for value in fixed_local_from_base(fixture, target[:3])
+                ],
+            }
+            for label, target in route
+        ],
+        "safety_note": (
+            "The first target changes only fixture-local Z from the current pose to the shared safe height. "
+            "All lateral travel occurs only after that lift succeeds and is verified."
+        ),
+    }
+    return plan, route
+
+
+def run_recover_low_pose_to_dock(
+    args: argparse.Namespace,
+    output_dir: Path,
+    fixture: FixtureTransform,
+) -> int:
+    """Preflight or execute a bounded recovery from a known low collection pose."""
+
+    robot = DobotCR3LiveClient(args.robot_ip, args.dashboard_port, args.move_port, args.robot_timeout_sec)
+    report_path = output_dir / "low_pose_recovery.json"
+    payload: dict[str, Any] = {
+        "schema": "cr3_coverage_board_low_pose_recovery.v1",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "tile_id": args.tile,
+        "fixture_profile": str(args.fixture_profile),
+        "tool": int(args.tool),
+        "user": int(args.user),
+        "execute_requested": bool(args.execute),
+        "status": "started",
+    }
+    try:
+        robot.connect()
+        replies = robot.set_user_tool(args.user, args.tool)
+        robot.require_motion_ready()
+        joints, current_pose, raw_joints, raw_pose = robot.read_state()
+        plan, route = low_pose_recovery_route(fixture, current_pose, args)
+        payload["plan"] = plan
+        payload["start_state"] = {
+            "actual_tcp": list_pose(current_pose),
+            "raw_get_angle": raw_joints,
+            "raw_get_pose": raw_pose,
+            "joint_count": len(joints or ()),
+            "set_user_tool_replies": replies,
+        }
+        _final_joints, checks = check_ik_sequence(robot, route, args, joints)
+        payload["ik_checks"] = checks
+        failure = next((item for item in checks if item.get("status") != "reachable"), None)
+        if failure is not None:
+            payload["status"] = "ik_preflight_failed"
+            payload["failure"] = failure
+            write_json(report_path, payload)
+            print("Low-pose recovery preflight failed: {}".format(report_path))
+            return 2
+        if not args.execute:
+            payload["status"] = "preflight_passed_no_motion"
+            write_json(report_path, payload)
+            print("Low-pose recovery preflight passed. No CR3 motion was sent.")
+            print("Low-pose recovery plan: {}".format(report_path))
+            return 0
+        payload["motions"] = execute_route(robot, route, "low-pose recovery", args)
+        _joints, final_pose, _raw_joints, raw_final_pose = robot.read_state()
+        position_error = position_error_mm(fixture.dock_tcp, final_pose)
+        rotation_error = rotation_error_deg(fixture.dock_tcp, final_pose)
+        payload["final_state"] = {
+            "actual_tcp": list_pose(final_pose),
+            "expected_dock_tcp": list_pose(fixture.dock_tcp),
+            "position_error_mm": position_error,
+            "rotation_error_deg": rotation_error,
+            "raw_get_pose": raw_final_pose,
+        }
+        if position_error > float(args.dock_position_tolerance_mm) or rotation_error > float(args.dock_rotation_tolerance_deg):
+            raise RuntimeError(
+                "Low-pose recovery did not re-seat at the dock: {:.3f} mm / {:.3f} deg away."
+                .format(position_error, rotation_error)
+            )
+        payload["status"] = "completed"
+        write_json(report_path, payload)
+        print("TacTip recovered to the saved dock TCP.")
+        print("Low-pose recovery report: {}".format(report_path))
+        return 0
+    except Exception as exc:
+        payload["status"] = "failed"
+        payload["error"] = "{}: {}".format(type(exc).__name__, exc)
+        write_json(report_path, payload)
+        print("Low-pose recovery report: {}".format(report_path))
+        raise
+    finally:
+        robot.close()
+
+
 def run_collection(
     args: argparse.Namespace,
     output_dir: Path,
@@ -3700,6 +4936,7 @@ def run_collection(
         "dock_design": str(args.dock_design),
         "fixture_profile_sha256": sha256_file(args.fixture_profile),
         "dock_design_sha256": sha256_file(args.dock_design),
+        "startup_dock_tactile_reference_refresh": getattr(args, "_startup_dock_reference_refresh", None),
         "board_manifest_sha256": sha256_file(next(args.board_dir.glob("*_manifest.json"))),
         "settings": {
             "profile": sampling_label(args),
@@ -3708,16 +4945,27 @@ def run_collection(
             "tool": int(args.tool),
             "user": int(args.user),
             "step_mm": float(args.step_mm),
+            "board_orientation": board_orientation_metadata(fixture, args),
             "board_height_offset_mm": float(args.board_height_offset_mm),
             "height_calibration": str(args.height_calibration) if args.height_calibration else None,
             "height_calibration_sha256": sha256_file(args.height_calibration) if args.height_calibration else None,
+            "runtime_height_datum": str(args.runtime_height_datum) if args.runtime_height_datum else None,
+            "runtime_height_datum_sha256": sha256_file(args.runtime_height_datum) if args.runtime_height_datum and args.runtime_height_datum.is_file() else None,
+            "runtime_height_offset_tile_z_mm": (
+                float(args._runtime_height_datum["offset_tile_z_mm"])
+                if getattr(args, "_runtime_height_datum", None) is not None else None
+            ),
+            "runtime_height_calibration_mode": bool(getattr(args, "calibrate_runtime_height", False)),
             "height_measurement": bool(args.height_measurement),
             "contact_search_margin_mm": float(args.contact_search_margin_mm),
             "max_extra_below_planned_contact_mm": float(args.max_extra_below_planned_contact_mm),
             "ik_candidate_multiplier": float(args.ik_candidate_multiplier),
             "reference_pad_check_enabled": not bool(args.skip_reference_pad_check),
             "dock_tactile_reference_check_enabled": not bool(args.skip_dock_tactile_reference_check),
+            "refresh_dock_reference_at_start": bool(args.refresh_dock_reference_at_start),
             "continuous_board_transit": bool(args.continuous_board_transit),
+            "continue_on_no_contact": bool(args.continue_on_no_contact),
+            "continue_on_safe_sample_error": bool(args.continue_on_safe_sample_error),
             "auto_dock_reseat": {
                 "enabled": not bool(args.disable_auto_dock_reseat),
                 "min_above_dock_mm": DEFAULT_AUTO_DOCK_RESEAT_MIN_ABOVE_MM,
@@ -3730,6 +4978,7 @@ def run_collection(
         "reference_check": None,
         "dock_tactile_reference_check": None,
         "ik_route_filter": None,
+        "resume": getattr(args, "_resume_info", None),
         "samples": [],
         "status": "started",
     }
@@ -3912,11 +5161,11 @@ def run_collection(
             print("Reference correction tile X/Y/Z = {:+.3f} / {:+.3f} / {:+.3f} mm".format(*correction_local), flush=True)
         else:
             dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-            exit_pose = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+            exit_pose = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
             execute_route(robot, (("dock_exit", exit_pose),), "start", args)
             payload["reference_check"] = {"status": "skipped", "correction_base_mm": correction.tolist()}
         dock_local = np.asarray(fixture.dock_tcp_local_mm, dtype=float)
-        dock_exit = fixture.pose((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
+        dock_exit = getattr(fixture, "dock_pose", fixture.pose)((dock_local[0], dock_local[1], dock_local[2] + float(args.dock_exit_lift_mm)))
         filter_joints, filter_pose, filter_raw_joints, filter_raw_pose = robot.read_state()
         filter_position_error = position_error_mm(dock_exit, filter_pose)
         filter_rotation_error = rotation_error_deg(dock_exit, filter_pose)
@@ -4003,47 +5252,159 @@ def run_collection(
                 flush=True,
             )
         stopped_after_no_contact = False
+        skipped_no_contact_count = 0
+        skipped_safe_error_counts: Counter[str] = Counter()
+        # These state variables advance only after the relevant waypoint has
+        # been verified by the CR3. A no-MovL IK refusal therefore cannot make
+        # the next route assume a site-high pose was reached.
+        at_site_high = False
+        known_safe_pose = dock_exit
         last_route: dict[str, Any] | None = None
-        for sample_number, sample in enumerate(samples):
+        for _sample_number, sample in enumerate(samples):
             route = make_route(sample, fixture, args, correction)
-            print("Begin {} ({}/{})".format(sample.sample_id, sample.index, len(samples)), flush=True)
-            if args.continuous_board_transit and sample_number > 0:
-                # The previous sample has already retracted to its site-high
-                # pose.  Move directly between site-high poses, which all use
-                # the shared fixture-local safe height, before descending at
-                # the new XY location.  ``move_and_verify`` still performs a
-                # fresh controller-side IK check for both waypoints.
+            original_total = int(
+                dict(getattr(args, "_resume_info", {}) or {}).get("original_sample_count", len(samples))
+            )
+            print("Begin {} ({}/{})".format(sample.sample_id, sample.index, original_total), flush=True)
+            if args.continuous_board_transit and at_site_high:
+                # The previous sample is known to be at its site-high pose.
+                # The next lateral move remains at the shared safe height.
                 outbound_route = (
                     ("next_site_high", route["site_high_tcp"]),
                     ("approach", route["approach_tcp"]),
                 )
             else:
-                # Collection starts at dock-exit after the one-time seated
-                # dock gate.  Legacy mode repeats this dock-high leg for every
-                # sample because each sample also returns to dock-exit.
+                # Start at dock-exit, including after an IK refusal which did
+                # not send any motion at all.
                 outbound_route = route["outbound"][1:]
-            outbound = execute_route(robot, outbound_route, sample.sample_id, args)
-            result = search_visual_contact(
-                robot,
-                camera,
-                preprocessor,
-                args,
-                output_dir,
-                sample.sample_id,
-                route["approach_tcp"],
-                route["contact_tcp"],
-                route["press_axis_base"],
-                0.0 if args.height_measurement else sample.post_contact_depth_mm,
+            return_route = (
+                (("site_high", route["site_high_tcp"]),)
+                if args.continuous_board_transit
+                else route["return"]
             )
-            result["outbound_motion"] = outbound
-            if args.continuous_board_transit:
-                return_route = (("site_high", route["site_high_tcp"]),)
-            else:
-                return_route = route["return"]
-            result["return_motion"] = execute_route(robot, return_route, "{} return".format(sample.sample_id), args)
-            item = {"sample": asdict(sample), "route": {"contact_tcp": list_pose(route["contact_tcp"]), "approach_tcp": list_pose(route["approach_tcp"]), "press_axis_base": [float(value) for value in route["press_axis_base"]], "board_height_offset_mm": route["board_height_offset_mm"], "calibrated_height_correction_mm": route["calibrated_height_correction_mm"], "effective_surface_z_mm": route["effective_surface_z_mm"]}, "result": result}
+            outbound: list[dict[str, Any]] | None = None
+            phase = "outbound_route"
+            try:
+                outbound = execute_route(robot, outbound_route, sample.sample_id, args)
+                phase = "contact_search"
+                result = search_visual_contact(
+                    robot,
+                    camera,
+                    preprocessor,
+                    args,
+                    output_dir,
+                    sample.sample_id,
+                    route["approach_tcp"],
+                    route["contact_tcp"],
+                    route["press_axis_base"],
+                    0.0 if args.height_measurement else sample.post_contact_depth_mm,
+                )
+                result["outbound_motion"] = outbound
+                phase = "return_route"
+                result["return_motion"] = execute_route(
+                    robot,
+                    return_route,
+                    "{} return".format(sample.sample_id),
+                    args,
+                )
+            except Exception as exc:
+                failure_kind = safe_sample_failure_kind(exc)
+                if (
+                    not args.continue_on_safe_sample_error
+                    or failure_kind is None
+                    or phase == "return_route"
+                ):
+                    raise
+
+                partial_outbound = (
+                    list(outbound)
+                    if outbound is not None
+                    else list(getattr(exc, "route_records", ()))
+                )
+                recovery_motion: list[dict[str, Any]] = []
+                recovery_mode = "not_required_no_movl"
+                post_skip_state: dict[str, Any] | None = None
+                needs_recovery = not (phase == "outbound_route" and not partial_outbound)
+                if needs_recovery:
+                    # A non-continuous route starts dock-exit -> dock-high.
+                    # If the following site-high IK query is rejected, remain
+                    # clear of the board and return directly to dock-exit.
+                    if (
+                        phase == "outbound_route"
+                        and not (args.continuous_board_transit and at_site_high)
+                        and len(partial_outbound) == 1
+                    ):
+                        recovery_route = (("dock_exit", dock_exit),)
+                        recovery_mode = "verified_dock_high_to_dock_exit"
+                    else:
+                        recovery_route = return_route
+                        recovery_mode = "verified_high_route"
+                    recovery_motion = execute_route(
+                        robot,
+                        recovery_route,
+                        "{} safe-skip recovery".format(sample.sample_id),
+                        args,
+                    )
+                    known_safe_pose = route["site_high_tcp"] if args.continuous_board_transit else dock_exit
+                    at_site_high = bool(args.continuous_board_transit)
+                    last_route = route
+                else:
+                    # The controller reported that no MovL was sent. Confirm
+                    # the robot is still exactly at the previously verified
+                    # safe endpoint before allowing the next sample.
+                    robot.require_motion_ready()
+                    _skip_joints, skip_pose, skip_raw_joints, skip_raw_pose = robot.read_state()
+                    verified_skip_pose = finite_pose(skip_pose, "safe-skip held TCP")
+                    position_error = position_error_mm(known_safe_pose, verified_skip_pose)
+                    rotation_error = rotation_error_deg(known_safe_pose, verified_skip_pose)
+                    if (
+                        position_error > float(args.motion_position_tolerance_mm)
+                        or rotation_error > float(args.motion_rotation_tolerance_deg)
+                    ):
+                        raise RuntimeError(
+                            "Safe-skip refused: no MovL was reported, but the held TCP is {:.3f} mm / {:.3f} deg "
+                            "from the last verified safe pose.".format(position_error, rotation_error)
+                        )
+                    post_skip_state = {
+                        "actual_tcp": list_pose(verified_skip_pose),
+                        "expected_safe_tcp": list_pose(known_safe_pose),
+                        "position_error_mm": position_error,
+                        "rotation_error_deg": rotation_error,
+                        "raw_get_angle": skip_raw_joints,
+                        "raw_get_pose": skip_raw_pose,
+                    }
+
+                result = {
+                    "status": "skipped_{}".format(failure_kind),
+                    "failure_kind": failure_kind,
+                    "reason": " | ".join(_exception_messages(exc)),
+                    "failure_phase": phase,
+                    "outbound_motion": partial_outbound,
+                    "return_motion": recovery_motion,
+                    "recovery_mode": recovery_mode,
+                }
+                if post_skip_state is not None:
+                    result["post_skip_state"] = post_skip_state
+                if hasattr(exc, "route_failed_label"):
+                    result["failed_route_waypoint"] = str(exc.route_failed_label)
+                    result["failed_route_target_tcp"] = getattr(exc, "route_failed_target_tcp", None)
+                if hasattr(exc, "contact_search_record"):
+                    result["contact_search"] = exc.contact_search_record
+                item = {"sample": asdict(sample), "route": {"contact_tcp": list_pose(route["contact_tcp"]), "approach_tcp": list_pose(route["approach_tcp"]), "press_axis_base": [float(value) for value in route["press_axis_base"]], "board_height_offset_mm": route["board_height_offset_mm"], "calibrated_height_correction_mm": route["calibrated_height_correction_mm"], "runtime_height_correction_mm": route["runtime_height_correction_mm"], "effective_surface_z_mm": route["effective_surface_z_mm"]}, "result": result}
+                payload["samples"].append(item)
+                skipped_safe_error_counts[failure_kind] += 1
+                write_json(metadata_path, payload)
+                print(
+                    "{} skipped as {} during {}; {}."
+                    .format(sample.sample_id, failure_kind, phase, recovery_mode),
+                    flush=True,
+                )
+                continue
+            item = {"sample": asdict(sample), "route": {"contact_tcp": list_pose(route["contact_tcp"]), "approach_tcp": list_pose(route["approach_tcp"]), "press_axis_base": [float(value) for value in route["press_axis_base"]], "board_height_offset_mm": route["board_height_offset_mm"], "calibrated_height_correction_mm": route["calibrated_height_correction_mm"], "runtime_height_correction_mm": route["runtime_height_correction_mm"], "effective_surface_z_mm": route["effective_surface_z_mm"]}, "result": result}
             payload["samples"].append(item)
             last_route = route
+            known_safe_pose = route["site_high_tcp"] if args.continuous_board_transit else dock_exit
+            at_site_high = bool(args.continuous_board_transit)
             write_json(metadata_path, payload)
             expected_status = "contact_found" if args.height_measurement else "captured"
             if result.get("status") != expected_status:
@@ -4052,10 +5413,21 @@ def run_collection(
                 if not args.continue_on_no_contact:
                     stopped_after_no_contact = True
                     break
+                skipped_no_contact_count += 1
+                print(
+                    "{} recorded as no-contact; continuing only after the verified site-high return."
+                    .format(sample.sample_id),
+                    flush=True,
+                )
             else:
                 print("{}: {} and returned high.".format(sample.sample_id, expected_status), flush=True)
-        if args.return_to_dock and not stopped_after_no_contact:
-            if args.continuous_board_transit and last_route is not None:
+        # Every sampled site has already completed its verified high retraction
+        # before it can set ``stopped_after_no_contact``.  Returning through
+        # dock-high/dock-exit therefore remains a known safe route even when a
+        # visual contact was not found; leaving the TacTip suspended over the
+        # board would make the next run depend on manual re-homing.
+        if args.return_to_dock:
+            if args.continuous_board_transit and at_site_high and last_route is not None:
                 return_by_label = dict(last_route["return"])
                 finish_route = (
                     ("dock_high", return_by_label["dock_high"]),
@@ -4068,14 +5440,30 @@ def run_collection(
             payload["finish_pose"] = "seated_dock_tcp"
         else:
             payload["finish_pose"] = "last_site_high_tcp" if args.continuous_board_transit else "dock_exit_tcp"
-        payload["status"] = "stopped_after_no_contact" if stopped_after_no_contact else "completed"
+        captured_count = sum(
+            1 for item in payload["samples"]
+            if dict(item.get("result", {})).get("status") == "captured"
+        )
+        payload["summary"] = {
+            "attempted_count": len(payload["samples"]),
+            "captured_count": captured_count,
+            "skipped_no_contact_count": skipped_no_contact_count,
+            "skipped_safe_error_count": int(sum(skipped_safe_error_counts.values())),
+            "skipped_safe_error_by_kind": dict(sorted(skipped_safe_error_counts.items())),
+        }
+        if stopped_after_no_contact:
+            payload["status"] = "stopped_after_no_contact"
+        elif skipped_no_contact_count or skipped_safe_error_counts:
+            payload["status"] = "completed_with_skips"
+        else:
+            payload["status"] = "completed"
         write_json(metadata_path, payload)
         write_collection_csv(csv_path, payload["samples"])
         build_report(report_path, payload, int(args.report_max_samples))
         print("Collection metadata: {}".format(metadata_path))
         print("Sample table: {}".format(csv_path))
         print("Collection report: {}".format(report_path))
-        return 0 if payload["status"] == "completed" else 2
+        return 0 if payload["status"] in {"completed", "completed_with_no_contact_skips", "completed_with_skips"} else 2
     except Exception as exc:
         failed = True
         payload["status"] = "failed"
@@ -4096,6 +5484,138 @@ def run_collection(
         robot.close()
         if failed:
             print("Collection stopped after an error. No automatic recovery move was issued; inspect CR3 state before continuing.", file=sys.stderr, flush=True)
+
+
+def runtime_height_measurements_from_collection(
+    collection: dict[str, Any],
+    fixture: FixtureTransform,
+) -> list[dict[str, Any]]:
+    """Convert actual CR3 first-contact brackets into tile-local datum rows."""
+
+    rows: list[dict[str, Any]] = []
+    for item in collection.get("samples", []):
+        sample = dict(item.get("sample", {}))
+        result = dict(item.get("result", {}))
+        site_id = str(sample.get("source_seed_site_id", ""))
+        if result.get("status") != "contact_found":
+            raise ValueError("{} did not produce a usable first-contact result".format(site_id or "runtime-height sample"))
+        bracket = result.get("first_contact_bracket")
+        if not isinstance(bracket, dict):
+            raise ValueError("{} lacks a refined visual-contact bracket".format(site_id))
+        contact = finite_pose(bracket.get("contact_tcp", ()), "{} contact TCP".format(site_id))
+        no_contact = finite_pose(bracket.get("no_contact_tcp", ()), "{} no-contact TCP".format(site_id))
+        rows.append(
+            {
+                "site_id": site_id,
+                "repeat": int(sample.get("replicate", 0)),
+                "sample_id": str(sample.get("sample_id", "")),
+                "region_id": str(sample.get("region_id", "")),
+                "category": str(sample.get("category", "")),
+                "stimulus": str(sample.get("stimulus", "")),
+                "bracket_mode": str(bracket.get("bracket_mode", "refined")),
+                "local_contact_mm": list(sample.get("local_contact_mm", ())),
+                "contact_tile_local_mm": [float(value) for value in base_to_tile_local(fixture, contact[:3])],
+                "no_contact_tile_local_mm": [float(value) for value in base_to_tile_local(fixture, no_contact[:3])],
+            }
+        )
+    return rows
+
+
+def run_runtime_height_calibration(
+    args: argparse.Namespace,
+    output_dir: Path,
+    dock_design: dict[str, Any],
+    fixture: FixtureTransform,
+    manifest_path: Path,
+    tile: dict[str, Any],
+    csv_rows: Sequence[dict[str, str]],
+) -> int:
+    """Collect repeated known-geometry contacts and save a persistent datum."""
+
+    samples = build_runtime_height_calibration_samples(tile, csv_rows, args)
+    calibration_plan = {
+        "schema": "cr3_coverage_board_runtime_height_calibration_plan.v1",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "tile_id": args.tile,
+        "fixture_profile": str(args.fixture_profile),
+        "dock_design": str(args.dock_design),
+        "runtime_height_datum_output": str(args.runtime_height_datum),
+        "site_ids": list(dict.fromkeys(str(sample.source_seed_site_id) for sample in samples)),
+        "repeats_per_site": RUNTIME_HEIGHT_REPEATS_PER_SITE,
+        "sample_count": len(samples),
+        "note": (
+            "All measurements are zero-tilt, zero-post-indentation visual first-contact brackets at the "
+            "four outer sites of one broad, known flat_reference plane. Each accepted bracket is one 0.5 mm "
+            "coarse step with a stable contact confirmation; three repeats bound its median midpoint. "
+            "Edges and curved features are deliberately excluded because they cannot validate the keyed XY frame."
+        ),
+        "samples": [asdict(sample) for sample in samples],
+    }
+    write_json(output_dir / "runtime_height_calibration_plan.json", calibration_plan)
+    write_plan_csv(output_dir / "sampling_plan.csv", samples, fixture, args)
+    if not args.skip_previews:
+        write_motion_route_preview(
+            output_dir / "runtime_height_calibration_motion_preview.html",
+            tile,
+            args.board_dir,
+            dock_design,
+            fixture,
+            args,
+            samples,
+        )
+    print(
+        "Runtime height calibration: {} contacts across {} flat-reference sites; no post-contact indentation will be applied."
+        .format(len(samples), len(calibration_plan["site_ids"])),
+        flush=True,
+    )
+    result = run_collection(args, output_dir, dock_design, fixture, samples, samples)
+    if result != 0:
+        return result
+    collection_path = output_dir / "collection.json"
+    collection = read_json(collection_path)
+    bindings = make_runtime_height_bindings(
+        args.fixture_profile,
+        args.dock_design,
+        manifest_path,
+        args.tile,
+        args.user,
+        args.tool,
+    )
+    datum = build_runtime_height_datum(
+        runtime_height_measurements_from_collection(collection, fixture),
+        bindings,
+        site_ids=calibration_plan["site_ids"],
+        repeats_per_site=RUNTIME_HEIGHT_REPEATS_PER_SITE,
+    )
+    datum["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    datum["source_collection"] = {
+        "path": str(collection_path),
+        "sha256": sha256_file(collection_path),
+    }
+    candidate_path = output_dir / "runtime_height_datum_candidate.json"
+    write_json(candidate_path, datum)
+    # Only publish after all flat-site/repeat/interval quality gates passed.
+    # A failed calibration therefore leaves an earlier accepted datum intact.
+    write_json(args.runtime_height_datum, datum)
+    write_json(
+        output_dir / "runtime_height_calibration_report.json",
+        {
+            "schema": "cr3_coverage_board_runtime_height_calibration_report.v1",
+            "status": "accepted",
+            "created_at": datum["created_at"],
+            "candidate_path": str(candidate_path),
+            "published_datum": str(args.runtime_height_datum),
+            "offset_tile_z_mm": datum["offset_tile_z_mm"],
+            "quality": datum["quality"],
+            "source_collection": datum["source_collection"],
+        },
+    )
+    print(
+        "Accepted runtime board-height datum: {:+.3f} mm tile-local Z -> {}"
+        .format(float(datum["offset_tile_z_mm"]), args.runtime_height_datum),
+        flush=True,
+    )
+    return 0
 
 
 def run_verify_dock_tactile_reference(
@@ -4229,7 +5749,44 @@ def run(args: argparse.Namespace) -> int:
         return teach_rest_stop_height_profile(args, dock_design)
     if args.teach_dock_from_current:
         return teach_dock_profile(args, dock_design)
+    if args.recover_low_pose_to_dock:
+        if not args.fixture_profile.is_file():
+            raise FileNotFoundError(
+                "No fixture profile at {}. A low-pose recovery requires the saved keyed dock datum."
+                .format(args.fixture_profile)
+            )
+        fixture = fixture_from_profile(read_json(args.fixture_profile), dock_design, args)
+        return run_recover_low_pose_to_dock(args, prepare_run_dir(args), fixture)
     manifest, tile, csv_rows = load_board_data(args)
+    manifest_path = next(args.board_dir.glob("*_manifest.json"))
+    tile_has_flat_reference = any(
+        str(row.get("region_id")) in {str(value) for value in tile.get("region_ids", [])}
+        and str(row.get("category")) == "flat"
+        and str(row.get("stimulus")) == "flat_reference"
+        for row in csv_rows
+    )
+    if (args.calibrate_runtime_height or args.runtime_height_datum) and not tile_has_flat_reference:
+        raise ValueError(
+            "{} has no broad flat_reference site. Its keyed dock rest crossbar is the only global height datum; "
+            "do not use --calibrate-runtime-height or --runtime-height-datum for this tile."
+            .format(args.tile)
+        )
+    if args.calibrate_runtime_height:
+        if not args.fixture_profile.is_file():
+            raise FileNotFoundError(
+                "No fixture profile at {}. Seat TacTip in the dock and run --teach-dock-from-current first."
+                .format(args.fixture_profile)
+            )
+        fixture = fixture_from_profile(read_json(args.fixture_profile), dock_design, args)
+        return run_runtime_height_calibration(
+            args,
+            prepare_run_dir(args),
+            dock_design,
+            fixture,
+            manifest_path,
+            tile,
+            csv_rows,
+        )
     filtered_rows = filter_tile_rows(tile, csv_rows, args)
     samples = apply_first_contact_test(build_samples(manifest, tile, filtered_rows, args), args)
     if args.height_measurement:
@@ -4238,6 +5795,7 @@ def run(args: argparse.Namespace) -> int:
         samples = [replace(sample, post_contact_depth_mm=0.0, tilt_x_deg=0.0, tilt_y_deg=0.0) for sample in samples]
     if args.zero_tilt:
         samples = [replace(sample, tilt_x_deg=0.0, tilt_y_deg=0.0) for sample in samples]
+    samples = resume_unattempted_samples(args, samples, manifest_path)
     full_route_preflight_requested = bool(args.preflight_all_routes or args.ik_preflight_only)
     if full_route_preflight_requested:
         ik_candidate_samples = build_ik_candidate_pool(manifest, tile, filtered_rows, args, samples)
@@ -4252,6 +5810,12 @@ def run(args: argparse.Namespace) -> int:
     sample_spatial_summary = spatial_coverage_summary(samples)
     candidate_spatial_summary = spatial_coverage_summary(ik_candidate_samples)
     csv_depth_summary = csv_depth_limit_summary(ik_candidate_samples, filtered_rows)
+    if args.refresh_dock_reference_at_start:
+        # The formal launcher uses this every time a TacTip head/camera may
+        # have been rotated or replaced. It replaces only the stale rest-stop
+        # image reference after proving the current TCP is still at the saved
+        # fixed crossbar pose. It cannot alter height or board geometry.
+        args._startup_dock_reference_refresh = refresh_dock_tactile_reference_at_start(args, dock_design)
     fixture: FixtureTransform | None = None
     fixture_profile_payload: dict[str, Any] | None = None
     if args.fixture_profile.is_file():
@@ -4259,6 +5823,21 @@ def run(args: argparse.Namespace) -> int:
         fixture = fixture_from_profile(fixture_profile_payload, dock_design, args)
     elif args.execute:
         raise FileNotFoundError("No fixture profile at {}. Seat TacTip in the dock and run --teach-dock-from-current first.".format(args.fixture_profile))
+    orientation_metadata = board_orientation_metadata(fixture, args, fixture_profile_payload)
+    if orientation_metadata is None and args.fixture_local_preview:
+        # Geometry-only previews have no measured profile, but honour the same
+        # runtime yaw convention so a user can inspect a candidate direction
+        # before applying it to the real fixture.
+        orientation_metadata = {
+            "saved_profile_yaw_deg": 0.0,
+            "runtime_yaw_offset_deg": float(args.board_yaw_offset_deg),
+            "effective_yaw_deg": float(args.board_yaw_offset_deg),
+            "transform_version": "board-centre-pivot.v1",
+            "rotation_pivot_tile_local_mm": [0.0, 0.0, 0.0],
+            "pivot": "tile geometric centre (geometry preview only)",
+            "positive_direction": "tile-local +X toward +Y about tile-local +Z (right-hand rule)",
+            "mutates_fixture_profile": False,
+        }
     if args.fixture_local_preview and fixture is not None:
         raise ValueError("--fixture-local-preview requires no real fixture profile; omit this flag to preview your measured fixture")
     if args.height_calibration:
@@ -4276,6 +5855,22 @@ def run(args: argparse.Namespace) -> int:
         # Validate every requested and reserve XY before any camera/robot action.
         for sample in (*samples, *ik_candidate_samples):
             board_surface_correction_mm(sample, args)
+    if args.runtime_height_datum:
+        if fixture is None:
+            raise ValueError("A real fixture profile is required to validate the runtime-height datum binding")
+        args._runtime_height_datum = load_runtime_height_datum(
+            args.runtime_height_datum,
+            make_runtime_height_bindings(
+                args.fixture_profile,
+                args.dock_design,
+                manifest_path,
+                args.tile,
+                args.user,
+                args.tool,
+            ),
+        )
+        for sample in (*samples, *ik_candidate_samples):
+            board_surface_correction_mm(sample, args)
     output_dir = prepare_run_dir(args)
     plan_path = output_dir / "sampling_plan.csv"
     preview_path = output_dir / "planned_sampling_points_3d.html"
@@ -4287,6 +5882,8 @@ def run(args: argparse.Namespace) -> int:
         "dock_design": str(args.dock_design),
         "dock_design_sha256": sha256_file(args.dock_design),
         "fixture_profile": str(args.fixture_profile) if fixture is not None else None,
+        "board_orientation": orientation_metadata,
+        "startup_dock_tactile_reference_refresh": getattr(args, "_startup_dock_reference_refresh", None),
         "tile": tile,
         "profile": sampling_label(args),
         "samples_per_tile": int(args.samples_per_tile) if args.samples_per_tile is not None else None,
@@ -4294,6 +5891,12 @@ def run(args: argparse.Namespace) -> int:
         "sample_count": len(samples),
         "height_calibration": str(args.height_calibration) if args.height_calibration else None,
         "height_calibration_sha256": sha256_file(args.height_calibration) if args.height_calibration else None,
+        "runtime_height_datum": str(args.runtime_height_datum) if args.runtime_height_datum else None,
+        "runtime_height_datum_sha256": sha256_file(args.runtime_height_datum) if args.runtime_height_datum and args.runtime_height_datum.is_file() else None,
+        "runtime_height_offset_tile_z_mm": (
+            float(args._runtime_height_datum["offset_tile_z_mm"])
+            if getattr(args, "_runtime_height_datum", None) is not None else None
+        ),
         "route_preview_frame": "tile_local_geometry_only" if args.fixture_local_preview else "measured_fixture" if fixture is not None else "no_route_fixture",
         "board_height_offset_mm": float(args.board_height_offset_mm),
         "contact_search_margin_mm": float(args.contact_search_margin_mm),
@@ -4321,13 +5924,17 @@ def run(args: argparse.Namespace) -> int:
             "max_rotation_error_deg": DEFAULT_AUTO_DOCK_RESEAT_ROTATION_TOLERANCE_DEG,
             "speed_percent": DEFAULT_AUTO_DOCK_RESEAT_SPEED_PERCENT,
         },
+        "resume": getattr(args, "_resume_info", None),
         "samples": [asdict(sample) for sample in samples],
         "notes": [
             "Tile-local X/Y/Z are exact coordinates from the generated board manifest and dock geometry.",
             "Exact-count plans use the selected spatial layout and recompute analytical surface height for every planned XY point. The default region_grid uses the footprint-safe central region, not repeated micro-jitter around nine seeds.",
             "A base-frame CR3 pose is emitted only after a valid seated fixture profile is supplied.",
             (
-                "For a raised-crossbar dock, an execute run automatically lowers only an XY/orientation-aligned "
+                "This run kept the fixed crossbar TCP/height/board axes and refreshed only the tactile image "
+                "reference from the current stationary TacTip; the prior reference image was ignored."
+                if args.refresh_dock_reference_at_start
+                else "For a raised-crossbar dock, an execute run automatically lowers only an XY/orientation-aligned "
                 "TacTip that is 0.1-5.0 mm above the saved crossbar at 1% speed, then verifies both the saved "
                 "Tool TCP and a current tactile image against the saved crossbar-contact reference; no board-site "
                 "movement is sent on a mismatch."
@@ -4363,7 +5970,14 @@ def run(args: argparse.Namespace) -> int:
     if not args.skip_previews:
         print("Building HTML previews (use --skip-previews to omit mesh processing)...", flush=True)
         preview_samples = [replace(sample, local_contact_mm=(sample.local_contact_mm[0], sample.local_contact_mm[1], sample.local_contact_mm[2] + board_surface_correction_mm(sample, args))) for sample in samples]
-        write_plan_preview(preview_path, tile, args.board_dir, dock_design, preview_samples)
+        write_plan_preview(
+            preview_path,
+            tile,
+            args.board_dir,
+            dock_design,
+            preview_samples,
+            runtime_yaw_offset_deg=float(args.board_yaw_offset_deg),
+        )
     ik_preview_path: Path | None = None
     motion_preview_path: Path | None = None
     if fixture is not None and not args.skip_previews:
@@ -4391,9 +6005,15 @@ def run(args: argparse.Namespace) -> int:
         )
     elif args.fixture_local_preview:
         local = tuple(float(value) for value in dock_design["tactip_reference"]["nominal_seated_tool_tcp_local_mm"])
+        adaptor = np.diag((1.0, -1.0, -1.0))
+        preview_yaw = Rotation.from_euler("Z", float(args.board_yaw_offset_deg), degrees=True).as_matrix()
         preview_fixture = FixtureTransform(
             dock_tcp=local + (180.0, 0.0, 0.0), dock_tcp_local_mm=local,
-            tile_to_base=np.eye(3), dock_rotation=np.diag((1.0, -1.0, -1.0)), board_yaw_deg=0.0,
+            tile_to_base=adaptor @ preview_yaw, dock_rotation=adaptor,
+            board_yaw_deg=float(args.board_yaw_offset_deg),
+            fixed_tile_to_base=adaptor,
+            board_pivot_local_mm=(0.0, 0.0, 0.0),
+            runtime_yaw_offset_deg=float(args.board_yaw_offset_deg),
         )
         motion_preview_path = output_dir / "fixture_local_motion_preview.html"
         write_motion_route_preview(motion_preview_path, tile, args.board_dir, dock_design, preview_fixture, args, samples)
@@ -4403,13 +6023,19 @@ def run(args: argparse.Namespace) -> int:
         args,
         args.fixture_profile if fixture is not None else None,
         tuple(float(value) for value in manifest.get("tile_size_mm", (0.0, 0.0))),
+        orientation_metadata,
     )
     print("Plan directory: {}".format(output_dir))
     print("Tile {}: {} planned tactile samples ({})".format(args.tile, len(samples), sampling_label(args)))
     if not args.skip_previews:
         print("Interactive local plan: {}".format(preview_path))
-    print("Planning completed in {:.1f}s; first-contact search margin {:.2f} mm; board-height correction {:+.2f} mm."
-          .format(time.monotonic() - planning_started, args.contact_search_margin_mm, args.board_height_offset_mm), flush=True)
+    active_height_correction = (
+        float(args._runtime_height_datum["offset_tile_z_mm"])
+        if getattr(args, "_runtime_height_datum", None) is not None
+        else float(args.board_height_offset_mm)
+    )
+    print("Planning completed in {:.1f}s; first-contact search margin {:.2f} mm; active global board-height correction {:+.2f} mm."
+          .format(time.monotonic() - planning_started, args.contact_search_margin_mm, active_height_correction), flush=True)
     if ik_preview_path is not None:
         print("Interactive IK candidate preview: {}".format(ik_preview_path))
     if motion_preview_path is not None:

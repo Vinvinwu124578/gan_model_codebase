@@ -7,3 +7,4 @@ __pycache__/
 outputs/**/profiles/
 outputs/**/cr3_coverage_board_runs/
 outputs/plans/
+outputs/diagnostics/

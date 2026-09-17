@@ -122,6 +122,35 @@ class SamplerConfigurationTests(unittest.TestCase):
         self.assertFalse(args.execute)
         self.assertFalse(args.no_tactip_preprocess)
 
+    def test_safe_sample_skip_flag_is_opt_in(self) -> None:
+        self.assertFalse(self.parse().continue_on_safe_sample_error)
+        self.assertTrue(self.parse("--continue-on-safe-sample-error").continue_on_safe_sample_error)
+
+    def test_runtime_board_yaw_offset_is_zero_by_default_and_accepts_signed_degrees(self) -> None:
+        self.assertEqual(self.parse().board_yaw_offset_deg, 0.0)
+        self.assertEqual(self.parse("--board-yaw-offset-deg", "-90").board_yaw_offset_deg, -90.0)
+
+    def test_startup_dock_reference_refresh_requires_normal_execute_collection(self) -> None:
+        self.assertFalse(self.parse().refresh_dock_reference_at_start)
+        self.assert_rejected(
+            "--refresh-dock-reference-at-start",
+            containing="--refresh-dock-reference-at-start is only valid for an execute collection",
+        )
+        args = self.parse(
+            "--refresh-dock-reference-at-start",
+            "--execute",
+            "--yes-i-confirm-cr3-is-safe",
+        )
+        self.assertTrue(args.refresh_dock_reference_at_start)
+
+    def test_old_startup_refresh_spelling_is_a_reference_only_alias(self) -> None:
+        args = self.parse(
+            "--refresh-dock-datum-at-start",
+            "--execute",
+            "--yes-i-confirm-cr3-is-safe",
+        )
+        self.assertTrue(args.refresh_dock_reference_at_start)
+
     def test_first_contact_default_cap_is_two_mm(self) -> None:
         args = self.parse(*self.first_contact_args())
         self.assertEqual(args.min_post_contact_depth_mm, 1.0)
@@ -196,6 +225,7 @@ class SamplerConfigurationTests(unittest.TestCase):
             "motion-rotation-tolerance-deg", "reference-max-lateral-correction-mm",
             "reference-max-vertical-correction-mm", "rest-stop-stability-tolerance-mm",
             "rest-stop-stability-tolerance-deg", "board-height-offset-mm", "board-yaw-deg",
+            "board-yaw-offset-deg",
             "contact-search-margin-mm", "ik-candidate-multiplier",
         )
         for option in options:
